@@ -158,34 +158,92 @@ async def get_live_feed(limit_per_agent: int = 3):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/chat/agent-responses")
-async def get_agent_responses(limit: int = 60):
-    """Get recent agent progress updates for chat display"""
+async def get_agent_responses(limit: int = 50, since: Optional[str] = None):
+    """Get completed task responses from agents for chat display
+    
+    Args:
+        limit: Maximum number of responses to return (default 50)
+        since: ISO timestamp - only return tasks updated after this time
+    """
     try:
-        mongo_client = get_mongo_client()
-        db = mongo_client.get_database()
+        # Get completed tasks from PostgreSQL with agent responses
+        conn = get_postgres_conn()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        # Get recent progress updates from all agents
-        messages = list(
-            db.progress_updates.find().sort("timestamp", -1).limit(limit)
-        )
+        # Build query with optional time filter
+        if since:
+            try:
+                since_dt = datetime.fromisoformat(since.replace('Z', '+00:00'))
+                query = """
+                    SELECT 
+                        id,
+                        title,
+                        status,
+                        agent_id,
+                        metadata,
+                        updated_at,
+                        created_at
+                    FROM tasks
+                    WHERE status IN ('completed', 'failed')
+                        AND metadata IS NOT NULL
+                        AND metadata->>'response' IS NOT NULL
+                        AND updated_at > %s
+                    ORDER BY updated_at DESC
+                    LIMIT %s
+                """
+                cur.execute(query, (since_dt, limit))
+            except (ValueError, TypeError):
+                # Invalid timestamp, fall back to recent tasks only
+                since = None
+        
+        if not since:
+            # Query for ONLY the last 50 completed/failed tasks with responses
+            cur.execute(
+                """
+                SELECT 
+                    id,
+                    title,
+                    status,
+                    agent_id,
+                    metadata,
+                    updated_at,
+                    created_at
+                FROM tasks
+                WHERE status IN ('completed', 'failed')
+                    AND metadata IS NOT NULL
+                    AND metadata->>'response' IS NOT NULL
+                ORDER BY updated_at DESC
+                LIMIT %s
+                """,
+                (limit,)
+            )
+        
+        tasks = cur.fetchall()
+        cur.close()
+        conn.close()
         
         # Format for chat display
         formatted_messages = []
-        for msg in messages:
+        for task in tasks:
+            metadata = task.get("metadata", {})
+            response_text = metadata.get("response", "")
+            
+            # Skip if no response text
+            if not response_text or not response_text.strip():
+                continue
+            
             formatted_messages.append({
-                "id": str(msg.get("_id")),
-                "agent_id": msg.get("agent_id", "unknown"),
-                "message": msg.get("message", ""),
-                "progress_percent": msg.get("progress_percent", 0),
-                "timestamp": msg.get("timestamp").isoformat() if msg.get("timestamp") else None,
-                "task_id": msg.get("task_id"),
+                "id": f"task-response-{task['id']}",
+                "agent_id": task.get("agent_id") or metadata.get("last_agent", "unknown"),
+                "message": response_text,
+                "progress_percent": 100,  # Completed tasks are always 100%
+                "timestamp": task.get("updated_at").isoformat() if task.get("updated_at") else None,
+                "task_id": task["id"],
                 "task": {
-                    "title": msg.get("task_title", ""),
-                    "status": msg.get("task_status", "")
-                } if msg.get("task_title") else None
+                    "title": task.get("title", ""),
+                    "status": task.get("status", "")
+                }
             })
-        
-        mongo_client.close()
         
         return {"messages": formatted_messages}
     except Exception as e:
