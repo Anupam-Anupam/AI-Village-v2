@@ -11,6 +11,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY ./agents/agent1/evaluator_agent /app
+COPY ./storage /app/storage
 
 RUN pip install --no-cache-dir \
     fastapi==0.115.0 \
@@ -20,7 +21,8 @@ RUN pip install --no-cache-dir \
     pydantic==2.8.2 \
     requests==2.32.3 \
     plotly==5.22.0 \
-    kaleido==0.2.1
+    kaleido==0.2.1 \
+    sqlalchemy>=2.0.0
 
 EXPOSE 8001
 ENTRYPOINT ["/usr/bin/tini", "--"]

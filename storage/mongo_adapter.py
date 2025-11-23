@@ -40,41 +40,50 @@ class MongoAdapter:
         
         # Get connection string from env or parameter
         if connection_string:
-            self.connection_string = connection_string
+            base_url = connection_string
         else:
             base_url = os.getenv("MONGODB_URL", "mongodb://admin:password@localhost:27017")
-            if cluster_mode:
-                # Cluster mode: extract base URL without database name
-                # Parse URL: mongodb://[user:pass@]host:port[/db][?options]
-                if '/' in base_url:
-                    # Remove database name but keep authentication and options
-                    parts = base_url.rsplit('/', 1)
-                    # Check if second part is a database name or query params
-                    if '?' not in parts[1] and parts[1]:
-                        # It's a database name, use base URL without it
-                        self.connection_string = parts[0]
+        
+        # Process connection string based on mode
+        if cluster_mode:
+            # Cluster mode: extract base URL without database name
+            # Parse URL: mongodb://[user:pass@]host:port[/db][?options]
+            # Split by '://' to separate scheme from rest
+            if '://' in base_url:
+                scheme, rest = base_url.split('://', 1)
+                # Split rest by '/' to separate host:port from db/options
+                if '/' in rest:
+                    host_part, path_part = rest.split('/', 1)
+                    # Remove database name, keep only query params if present
+                    if '?' in path_part:
+                        # Has query params, keep them
+                        query_params = '?' + path_part.split('?', 1)[1]
+                        self.connection_string = f"{scheme}://{host_part}{query_params}"
                     else:
-                        # Already no database name or has query params
-                        self.connection_string = base_url
+                        # No query params, just remove database name
+                        self.connection_string = f"{scheme}://{host_part}"
                 else:
+                    # No database in URL
                     self.connection_string = base_url
             else:
-                # Single agent mode: use agent-specific database
-                db_name = f"{self.agent_id}db"
-                if '/' in base_url and not base_url.endswith('/'):
-                    # Replace database name
-                    parts = base_url.rsplit('/', 1)
-                    query_params = ''
-                    if '?' in parts[1]:
-                        db_part, query_params = parts[1].split('?', 1)
-                        query_params = '?' + query_params
-                    else:
-                        db_part = parts[1].split('?')[0]
-                    
-                    self.connection_string = f"{parts[0]}/{db_name}{query_params}"
+                self.connection_string = base_url
+        else:
+            # Single agent mode: use agent-specific database
+            db_name = f"{self.agent_id}db"
+            if '/' in base_url and not base_url.endswith('/'):
+                # Replace database name
+                parts = base_url.rsplit('/', 1)
+                query_params = ''
+                if '?' in parts[1]:
+                    db_part, query_params = parts[1].split('?', 1)
+                    query_params = '?' + query_params
                 else:
-                    query_params = '?' + base_url.split('?')[1] if '?' in base_url else ''
-                    self.connection_string = f"{base_url.rstrip('/')}/{db_name}{query_params}"
+                    db_part = parts[1].split('?')[0]
+                
+                self.connection_string = f"{parts[0]}/{db_name}{query_params}"
+            else:
+                query_params = '?' + base_url.split('?')[1] if '?' in base_url else ''
+                self.connection_string = f"{base_url.rstrip('/')}/{db_name}{query_params}"
         
         # Connect to MongoDB
         self.client = MongoClient(self.connection_string)
@@ -147,7 +156,7 @@ class MongoAdapter:
     def read_logs(
         self,
         agent_id: Optional[str] = None,
-        level: Optional[str] = None,
+        level: Optional[Any] = None,
         task_id: Optional[str] = None,
         limit: int = 50,
         start_time: Optional[datetime] = None,
@@ -158,7 +167,7 @@ class MongoAdapter:
         
         Args:
             agent_id: Agent identifier (only used in cluster mode)
-            level: Filter by log level
+            level: Filter by log level (can be string or MongoDB query dict like {"$ne": "debug"})
             task_id: Filter by task ID
             limit: Maximum number of results
             start_time: Filter logs after this time
@@ -173,19 +182,27 @@ class MongoAdapter:
             # Cluster mode: connect to specific agent database
             db_name = f"{agent_id}db"
             if db_name not in self.databases:
-                # Parse connection string to get base URL
-                base_url = self.connection_string.rstrip('/')
-                db_url = f"{base_url}/{db_name}"
-                # Preserve authentication if present
-                if '@' in base_url:
-                    # Already has auth
-                    pass
-                client = MongoClient(db_url)
-                self.databases[db_name] = {
-                    "client": client,
-                    "db": client[db_name],
-                    "logs": client[db_name].agent_logs
-                }
+                # Parse connection string to construct agent-specific URL
+                # connection_string format: mongodb://user:pass@host:port[?options]
+                if '?' in self.connection_string:
+                    base_url, query_params = self.connection_string.split('?', 1)
+                    db_url = f"{base_url}/{db_name}?{query_params}"
+                else:
+                    db_url = f"{self.connection_string}/{db_name}?authSource=admin"
+                
+                try:
+                    client = MongoClient(db_url)
+                    self.databases[db_name] = {
+                        "client": client,
+                        "db": client[db_name],
+                        "logs": client[db_name].agent_logs
+                    }
+                except Exception as e:
+                    raise ValueError(f"Failed to connect to {db_name}: {e}")
+            
+            if db_name not in self.databases or "logs" not in self.databases[db_name]:
+                raise ValueError(f"Database {db_name} not properly initialized")
+            
             logs_collection = self.databases[db_name]["logs"]
         else:
             if not self.cluster_mode and agent_id and agent_id != self.agent_id:
@@ -197,7 +214,8 @@ class MongoAdapter:
         elif not self.cluster_mode:
             query["agent_id"] = self.agent_id
         
-        if level:
+        if level is not None:
+            # Support both string and dict (for MongoDB operators like $ne)
             query["level"] = level
         
         if task_id:
@@ -266,8 +284,13 @@ class MongoAdapter:
         if agent_id and self.cluster_mode:
             db_name = f"{agent_id}db"
             if db_name not in self.databases:
-                base_url = self.connection_string.rstrip('/')
-                db_url = f"{base_url}/{db_name}"
+                # Parse connection string to construct agent-specific URL
+                if '?' in self.connection_string:
+                    base_url, query_params = self.connection_string.split('?', 1)
+                    db_url = f"{base_url}/{db_name}?{query_params}"
+                else:
+                    db_url = f"{self.connection_string}/{db_name}?authSource=admin"
+                
                 client = MongoClient(db_url)
                 self.databases[db_name] = {
                     "client": client,
@@ -341,8 +364,13 @@ class MongoAdapter:
                 raise ValueError("agent_id required in cluster mode")
             db_name = f"{agent_id}db"
             if db_name not in self.databases:
-                base_url = self.connection_string.rstrip('/')
-                db_url = f"{base_url}/{db_name}"
+                # Parse connection string to construct agent-specific URL
+                if '?' in self.connection_string:
+                    base_url, query_params = self.connection_string.split('?', 1)
+                    db_url = f"{base_url}/{db_name}?{query_params}"
+                else:
+                    db_url = f"{self.connection_string}/{db_name}?authSource=admin"
+                
                 client = MongoClient(db_url)
                 self.databases[db_name] = {
                     "client": client,
@@ -363,6 +391,175 @@ class MongoAdapter:
         
         cursor = screenshots_collection.find(query).sort("uploaded_at", -1).limit(limit)
         return list(cursor)
+    
+    def fetch_task_logs(
+        self,
+        agent_id: str,
+        task_id: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch all logs for a specific task.
+        
+        Args:
+            agent_id: Agent identifier
+            task_id: Task identifier (can be string or int)
+            
+        Returns:
+            List of log entries for the task
+        """
+        # Try both string and integer task_id since MongoDB might store it as either
+        try:
+            task_id_int = int(task_id)
+        except (ValueError, TypeError):
+            task_id_int = None
+        
+        # Try string first
+        logs = self.read_logs(
+            agent_id=agent_id,
+            task_id=task_id,
+            limit=1000
+        )
+        
+        # If no logs found and we can convert to int, try int
+        if not logs and task_id_int is not None:
+            logs = self.read_logs(
+                agent_id=agent_id,
+                task_id=task_id_int,
+                limit=1000
+            )
+        
+        return logs
+    
+    def fetch_task_logs_until(
+        self,
+        agent_id: str,
+        task_id: str,
+        cutoff_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch logs for a task up to a specific time.
+        
+        Args:
+            agent_id: Agent identifier
+            task_id: Task identifier
+            cutoff_time: Only return logs before this time
+            
+        Returns:
+            List of log entries for the task up to cutoff_time
+        """
+        return self.read_logs(
+            agent_id=agent_id,
+            task_id=task_id,
+            end_time=cutoff_time,
+            limit=1000
+        )
+    
+    def compute_basic_metrics(
+        self,
+        logs: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Compute basic metrics from log entries.
+        
+        Args:
+            logs: List of log entries
+            
+        Returns:
+            Dictionary of computed metrics
+        """
+        if not logs:
+            return {
+                "error_count": 0,
+                "retry_count": 0,
+                "total_api_calls": 0,
+                "human_or_agent_requests": 0,
+                "completion_time_s": 0.0
+            }
+        
+        # Sort logs by timestamp
+        sorted_logs = sorted(
+            logs,
+            key=lambda x: x.get("created_at") or x.get("timestamp") or datetime.min
+        )
+        
+        error_count = sum(1 for log in logs if log.get("level") == "error")
+        retry_count = sum(1 for log in logs if "retry" in str(log.get("message", "")).lower())
+        
+        # Count API calls from log messages
+        api_call_patterns = ["api", "openai", "gpt", "completion", "request"]
+        total_api_calls = sum(
+            1 for log in logs
+            if any(pattern in str(log.get("message", "")).lower() for pattern in api_call_patterns)
+        )
+        
+        # Count dependency requests
+        dependency_patterns = ["human", "agent", "help", "assistance", "request"]
+        human_or_agent_requests = sum(
+            1 for log in logs
+            if any(pattern in str(log.get("message", "")).lower() for pattern in dependency_patterns)
+        )
+        
+        # Calculate completion time
+        completion_time_s = 0.0
+        if sorted_logs:
+            start_time = sorted_logs[0].get("created_at") or sorted_logs[0].get("timestamp")
+            end_time = sorted_logs[-1].get("created_at") or sorted_logs[-1].get("timestamp")
+            
+            if start_time and end_time:
+                if isinstance(start_time, str):
+                    try:
+                        start_time = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                    except:
+                        start_time = None
+                if isinstance(end_time, str):
+                    try:
+                        end_time = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
+                    except:
+                        end_time = None
+                
+                if start_time and end_time:
+                    delta = end_time - start_time
+                    completion_time_s = delta.total_seconds()
+        
+        return {
+            "error_count": error_count,
+            "retry_count": retry_count,
+            "total_api_calls": total_api_calls,
+            "human_or_agent_requests": human_or_agent_requests,
+            "completion_time_s": completion_time_s
+        }
+    
+    def get_most_recent_task_id(
+        self,
+        agent_id: str
+    ) -> Optional[str]:
+        """
+        Get the most recent task ID for an agent from logs.
+        
+        Args:
+            agent_id: Agent identifier
+            
+        Returns:
+            Most recent task ID or None if no logs found
+        """
+        if not self.cluster_mode:
+            raise ValueError("Cluster mode required to get task ID from different agent.")
+        
+        # Get recent logs for the agent, sorted by created_at descending
+        logs = self.read_logs(agent_id=agent_id, limit=100)
+        
+        if not logs:
+            return None
+        
+        # Find the most recent task_id (logs are already sorted by created_at desc)
+        for log in logs:
+            task_id = log.get("task_id")
+            # Handle both None and empty values, and convert to string
+            if task_id is not None and task_id != "":
+                # Convert to string, handling both int and string types
+                return str(task_id)
+        
+        return None
     
     def close(self):
         """Close MongoDB connections."""

@@ -1,10 +1,12 @@
-"""
+S C:\AI VILLAGE\v3\AI-Village-v2> docker ps --filter "name=mongodb"
+CONTAINER ID   IMAGE       COMMAND                  CREATED          STATUS                    PORTS                                             NAMES  
+93ff3a068521   mongo:7.0   "docker-entrypoint.s…"   53 minutes ago   Up 53 minutes (healthy)   0.0.0.0:27017->27017/tcp, [::]:27017->27017/tcp   ai-village-v2-mongodb-1"""
 Lean trajectory processor - watches CUA trajectory files and stores in MongoDB.
 """
 import json
 import base64
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
@@ -40,6 +42,100 @@ class TrajectoryProcessor(FileSystemEventHandler):
         # Process existing files
         self._process_existing()
     
+    def _extract_messages_from_json(self, data: Dict[str, Any]) -> List[str]:
+        """Extract all meaningful messages/results from JSON data using multiple schema patterns."""
+        messages = []
+        
+        if not isinstance(data, dict):
+            return messages
+        
+        # Schema 1: response.output structure
+        if "response" in data:
+            response = data["response"]
+            if isinstance(response, dict) and "output" in response:
+                output = response["output"]
+                if isinstance(output, list):
+                    for item in output:
+                        if isinstance(item, dict) and item.get("type") == "message":
+                            content = item.get("content", [])
+                            if isinstance(content, list):
+                                for content_item in content:
+                                    if isinstance(content_item, dict):
+                                        # Try output_text type
+                                        if content_item.get("type") == "output_text":
+                                            text = content_item.get("text")
+                                            if isinstance(text, str) and text.strip():
+                                                messages.append(text.strip())
+                                        # Try direct text field
+                                        elif "text" in content_item:
+                                            text = content_item.get("text")
+                                            if isinstance(text, str) and text.strip():
+                                                messages.append(text.strip())
+        
+        # Schema 2: direct output structure
+        if "output" in data:
+            output = data["output"]
+            if isinstance(output, list):
+                for item in output:
+                    if isinstance(item, dict) and item.get("type") == "message":
+                        content = item.get("content", [])
+                        if isinstance(content, list):
+                            for content_item in content:
+                                if isinstance(content_item, dict):
+                                    # Try output_text type
+                                    if content_item.get("type") == "output_text":
+                                        text = content_item.get("text")
+                                        if isinstance(text, str) and text.strip():
+                                            messages.append(text.strip())
+                                    # Try direct text field
+                                    elif "text" in content_item:
+                                        text = content_item.get("text")
+                                        if isinstance(text, str) and text.strip():
+                                            messages.append(text.strip())
+                        # Also check if content is a string directly
+                        elif isinstance(content, str) and content.strip():
+                            messages.append(content.strip())
+        
+        # Schema 3: role-based messages (assistant role)
+        if data.get("role") == "assistant":
+            if "content" in data:
+                content = data["content"]
+                if isinstance(content, str) and content.strip():
+                    messages.append(content.strip())
+                elif isinstance(content, list):
+                    for item in content:
+                        if isinstance(item, dict) and "text" in item:
+                            text = item.get("text")
+                            if isinstance(text, str) and text.strip():
+                                messages.append(text.strip())
+                        elif isinstance(item, str) and item.strip():
+                            messages.append(item.strip())
+        
+        # Schema 4: direct text/result fields
+        for field in ["text", "result", "message", "content", "response_text"]:
+            if field in data:
+                value = data[field]
+                if isinstance(value, str) and value.strip():
+                    messages.append(value.strip())
+                elif isinstance(value, dict) and "text" in value:
+                    text = value.get("text")
+                    if isinstance(text, str) and text.strip():
+                        messages.append(text.strip())
+        
+        # Schema 5: nested result/response structures
+        if "result" in data and isinstance(data["result"], dict):
+            result = data["result"]
+            if "text" in result:
+                text = result.get("text")
+                if isinstance(text, str) and text.strip():
+                    messages.append(text.strip())
+            if "output" in result:
+                output = result["output"]
+                if isinstance(output, str) and output.strip():
+                    messages.append(output.strip())
+        
+        return messages
+    
     def _process_existing(self):
         """Process any existing trajectory files."""
         if not self.trajectory_dir.exists():
@@ -62,24 +158,29 @@ class TrajectoryProcessor(FileSystemEventHandler):
             self.processed_files.add(str(file_path))
             print(f"[TrajectoryProcessor] File loaded, keys: {list(data.keys()) if isinstance(data, dict) else 'not a dict'}")
             
-            # Extract agent responses and screenshots from trajectory
+            # Extract meaningful messages/results from JSON
+            extracted_messages = []
             if isinstance(data, dict):
-                # Extract agent responses from output
+                extracted_messages = self._extract_messages_from_json(data)
+                
+                # Log each extracted message
+                for msg in extracted_messages:
+                    if msg:  # Only log non-empty messages
+                        print(f"[TrajectoryProcessor] Extracted message: {msg[:100]}...")
+                        self.mongo.write_log(
+                            task_id=self.task_id,
+                            level="info",
+                            message=msg,
+                            meta={"type": "agent_response", "source": "trajectory", "file": file_path.name}
+                        )
+                
+                # Extract agent responses from output (legacy support)
                 if "output" in data:
                     for item in data.get("output", []):
                         if item.get("type") == "message":
                             content = item.get("content", [])
                             for cp in content:
                                 if isinstance(cp, dict):
-                                    text = cp.get("text")
-                                    if text:
-                                        self.mongo.write_log(
-                                            task_id=self.task_id,
-                                            level="info",
-                                            message=text,
-                                            meta={"type": "agent_response", "source": "trajectory"}
-                                        )
-                                    
                                     # Check for image in content
                                     image_url = cp.get("image_url") or cp.get("image")
                                     if image_url and isinstance(image_url, str):
@@ -105,13 +206,22 @@ class TrajectoryProcessor(FileSystemEventHandler):
                 if "trajectory" in data:
                     self._process_trajectory_data(data["trajectory"])
             
-            # Store as log entry
-            self.mongo.write_log(
-                task_id=self.task_id,
-                level="info",
-                message=f"Trajectory processed: {file_path.name}",
-                meta={"trajectory_file": str(file_path), "data": data}
-            )
+            # Store a summary log entry (only if no messages were extracted, to avoid duplicate logs)
+            if not extracted_messages:
+                self.mongo.write_log(
+                    task_id=self.task_id,
+                    level="debug",
+                    message=f"Trajectory processed: {file_path.name}",
+                    meta={"trajectory_file": str(file_path), "data": data}
+                )
+            else:
+                # Store a brief summary log with count of messages extracted
+                self.mongo.write_log(
+                    task_id=self.task_id,
+                    level="debug",
+                    message=f"Trajectory processed: {file_path.name} ({len(extracted_messages)} messages extracted)",
+                    meta={"trajectory_file": str(file_path), "messages_count": len(extracted_messages)}
+                )
             
         except Exception as e:
             print(f"Error processing trajectory {file_path}: {e}")

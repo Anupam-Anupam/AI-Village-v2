@@ -1,9 +1,11 @@
 import json
 import logging
 import os
+from datetime import datetime
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import sys
@@ -31,8 +33,17 @@ class Health(BaseModel):
 def create_app() -> FastAPI:
     app = FastAPI(title="Evaluator Agent API", version="1.0.0")
 
-    mongo = MongoAdapter(logger=logger)
-    pg = PostgresAdapter(logger=logger)
+    # Add CORS middleware to allow frontend access
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    mongo = MongoAdapter(cluster_mode=True)
+    pg = PostgresAdapter()
 
     collector = DataCollector(mongo=mongo, pg=pg, logger=logger)
     scorer = ScoringEngine(logger=logger)
@@ -109,6 +120,137 @@ def create_app() -> FastAPI:
         except Exception as e:
             logger.error(json.dumps({"event": "plot_render_error", "scope": "task", "task_id": task_id, "error": str(e)}))
             return Response(content=f"plot render error: {e}", media_type="text/plain", status_code=503)
+
+    @app.get("/agents/progress/graph")
+    def generate_agents_progress_graph():
+        """
+        Generate a progress graph for all agents based on their most recent task.
+        Accesses MongoDB logs for each agent, analyzes progress at each step,
+        and returns a screenshot saved to the local machine.
+        """
+        try:
+            agent_ids = ["agent1", "agent2", "agent3"]
+            agent_snapshots = {}
+            
+            # Get most recent task for each agent and collect progress snapshots
+            for agent_id in agent_ids:
+                try:
+                    logger.info(json.dumps({
+                        "event": "starting_agent_check",
+                        "agent_id": agent_id
+                    }))
+                    
+                    # Get most recent task ID for this agent
+                    task_id = collector.get_most_recent_task_for_agent(agent_id)
+                    
+                    logger.info(json.dumps({
+                        "event": "checking_agent_task",
+                        "agent_id": agent_id,
+                        "task_id": task_id
+                    }))
+                    
+                    if not task_id:
+                        logger.warning(json.dumps({
+                            "event": "no_recent_task",
+                            "agent_id": agent_id
+                        }))
+                        continue
+                    
+                    logger.info(json.dumps({
+                        "event": "collecting_snapshots",
+                        "agent_id": agent_id,
+                        "task_id": task_id
+                    }))
+                    
+                    # Collect progress snapshots for this agent's task
+                    snapshots = collector.collect_progress_snapshots_for_agent_task(agent_id, task_id)
+                    
+                    logger.info(json.dumps({
+                        "event": "snapshots_collected",
+                        "agent_id": agent_id,
+                        "task_id": task_id,
+                        "snapshot_count": len(snapshots) if snapshots else 0
+                    }))
+                    
+                    if snapshots:
+                        agent_snapshots[agent_id] = snapshots
+                        logger.info(json.dumps({
+                            "event": "collected_agent_snapshots",
+                            "agent_id": agent_id,
+                            "task_id": task_id,
+                            "snapshot_count": len(snapshots)
+                        }))
+                    else:
+                        logger.warning(json.dumps({
+                            "event": "no_snapshots_collected",
+                            "agent_id": agent_id,
+                            "task_id": task_id
+                        }))
+                except Exception as e:
+                    import traceback
+                    logger.error(json.dumps({
+                        "event": "collect_agent_error",
+                        "agent_id": agent_id,
+                        "error": str(e),
+                        "traceback": traceback.format_exc()
+                    }))
+                    continue
+            
+            if not agent_snapshots:
+                raise HTTPException(
+                    status_code=404,
+                    detail="No progress data found for any agent"
+                )
+            
+            # Build multi-agent progress figure
+            from modules.visualization import build_multi_agent_progress_figure, figure_to_png_bytes
+            
+            fig = build_multi_agent_progress_figure(agent_snapshots)
+            
+            # Convert figure to PNG bytes and then to base64
+            import base64
+            png_bytes = figure_to_png_bytes(fig)
+            image_base64 = base64.b64encode(png_bytes).decode('utf-8')
+            image_data_url = f"data:image/png;base64,{image_base64}"
+            
+            # Store metadata in PostgreSQL for history
+            try:
+                timestamp = datetime.now()
+                # Store as evaluation or create a progress_graphs table entry
+                # For now, we'll just return it - can add storage later if needed
+                logger.info(json.dumps({
+                    "event": "progress_graph_generated",
+                    "agents": list(agent_snapshots.keys()),
+                    "snapshot_counts": {agent: len(snapshots) for agent, snapshots in agent_snapshots.items()},
+                    "timestamp": timestamp.isoformat()
+                }))
+            except Exception as e:
+                logger.warning(json.dumps({
+                    "event": "progress_graph_metadata_save_failed",
+                    "error": str(e)
+                }))
+            
+            # Return response with image data URL
+            return {
+                "status": "success",
+                "image_data_url": image_data_url,
+                "agents": list(agent_snapshots.keys()),
+                "snapshot_counts": {agent: len(snapshots) for agent, snapshots in agent_snapshots.items()},
+                "timestamp": datetime.now().isoformat(),
+                "message": "Progress graph generated successfully"
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(json.dumps({
+                "event": "progress_graph_error",
+                "error": str(e)
+            }))
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to generate progress graph: {str(e)}"
+            )
 
     return app
 

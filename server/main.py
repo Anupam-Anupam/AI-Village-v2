@@ -17,6 +17,7 @@ from pydantic import BaseModel
 # Import storage adapters
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent))
 from storage import MongoAdapter, PostgresAdapter
 
 from agent_manager import AgentManager

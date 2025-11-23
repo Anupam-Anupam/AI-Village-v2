@@ -5,5 +5,4 @@ watchdog>=3.0.0
 cua-agent
 cua-computer
 cua-som>=0.1.3
-
-
+playwright>=1.40.0

@@ -304,6 +304,21 @@ class PostgresAdapter:
         finally:
             db.close()
     
+    def get_all_tasks(
+        self,
+        limit: int = 1000
+    ) -> List[Dict[str, Any]]:
+        """
+        Get all tasks (used by evaluator scheduler).
+        
+        Args:
+            limit: Maximum number of results
+            
+        Returns:
+            List of task records
+        """
+        return self.get_tasks(agent_id=None, status=None, limit=limit)
+    
     def get_task_progress(
         self,
         task_id: int,

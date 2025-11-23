@@ -123,6 +123,32 @@ services:
       - mongodb
     restart: unless-stopped
 
+  # Evaluator Agent - evaluates agent performance and generates graphs
+  evaluator_agent:
+    build:
+      context: .
+      dockerfile: agents/agent1/evaluator_agent/Dockerfile
+    env_file:
+      - .env
+      - agents/agent1/evaluator_agent/config.env
+    environment:
+      - POSTGRES_URL=postgresql://hub:hubpassword@postgres:5432/hub
+      - MONGODB_URL=mongodb://admin:password@mongodb:27017?authSource=admin
+      - DEFAULT_AGENT_ID=agent1
+      - SCHEDULE_INTERVAL_SECONDS=60
+      - LOG_LEVEL=INFO
+      - EVAL_HISTORY_DIR=/data/history
+    ports:
+      - "8001:8001"
+    volumes:
+      - evaluator_history:/data/history
+    networks:
+      - ai-village-network
+    depends_on:
+      - postgres
+      - mongodb
+    restart: unless-stopped
+
   # Frontend - React app served by nginx
   frontend:
     build:
@@ -145,3 +171,4 @@ networks:
 volumes:
   mongodb_data:
   postgres_data:
+  evaluator_history:
