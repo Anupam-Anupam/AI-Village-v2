@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { API_BASE, REFRESH_INTERVALS } from '../config';
+import VNCStreamMini from './VNCStreamMini';
 import '../App.css';
 
 const formatTime = (timestamp) => {
@@ -69,8 +70,7 @@ const AgentLiveFeed = () => {
     }
 
     return agents.map((agent) => {
-      const { agent_id: agentId, screenshots = [], latest_progress: latestProgress, progress_updates: progressUpdates = [] } = agent;
-      const primaryScreenshot = screenshots[0];
+      const { agent_id: agentId, vnc_url: vncUrl, latest_progress: latestProgress, progress_updates: progressUpdates = [] } = agent;
       const percentLabel = latestProgress ? formatPercent(latestProgress.progress_percent) : null;
 
       return (
@@ -87,25 +87,14 @@ const AgentLiveFeed = () => {
             </div>
           </div>
 
-          <div className="agent-card__screenshot">
-            {primaryScreenshot?.url ? (
-              <img
-                src={primaryScreenshot.url}
-                alt={`Latest screenshot for ${agentId}`}
-                loading="lazy"
-              />
-            ) : (
-              <div className="agent-card__placeholder">
-                No screenshot available yet
-              </div>
-            )}
-          </div>
+          {/* Mini VNC Stream - Just the live feed, nothing else */}
+          <VNCStreamMini 
+            agentId={agentId}
+            vncUrl={vncUrl || "https://m-linux-aqnzbmas97.containers.cloud.trycua.com/vnc.html?autoconnect=true&password=479e9bdb455b566d"}
+          />
 
           <div className="agent-card__meta">
-            <span>Last update: {formatTime(latestProgress?.timestamp || primaryScreenshot?.uploaded_at)}</span>
-            {primaryScreenshot?.task_id && (
-              <span className="agent-card__task">Task #{primaryScreenshot.task_id}</span>
-            )}
+            <span>Last update: {formatTime(latestProgress?.timestamp)}</span>
           </div>
 
           {progressUpdates.length > 0 && (

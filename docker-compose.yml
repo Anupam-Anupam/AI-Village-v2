@@ -59,15 +59,17 @@ services:
     build:
       context: .
       dockerfile: agents/agent1/agent_worker/Dockerfile
+    env_file:
+      - .env
+      - agents/agent1/.env
     environment:
       - POSTGRES_URL=postgresql://hub:hubpassword@postgres:5432/hub
       - MONGODB_URL=mongodb://admin:password@mongodb:27017/agent_logs_db?authSource=admin
       - AGENT_ID=agent1
       - POLL_INTERVAL_SECONDS=5
       - RUN_TASK_TIMEOUT_SECONDS=300
-      - CUA_API_KEY=${CUA_API_KEY}
-      - CUA_SANDBOX_NAME=${CUA_SANDBOX_NAME}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    volumes:
+      - ./trajectories:/tmp/agent_work:rw
     networks:
       - ai-village-network
     depends_on:
@@ -80,15 +82,17 @@ services:
     build:
       context: .
       dockerfile: agents/agent2/agent_worker/Dockerfile
+    env_file:
+      - .env
+      - agents/agent2/.env
     environment:
       - POSTGRES_URL=postgresql://hub:hubpassword@postgres:5432/hub
       - MONGODB_URL=mongodb://admin:password@mongodb:27017/agent_logs_db?authSource=admin
       - AGENT_ID=agent2
       - POLL_INTERVAL_SECONDS=5
       - RUN_TASK_TIMEOUT_SECONDS=300
-      - CUA_API_KEY=${CUA_API_KEY}
-      - CUA_SANDBOX_NAME=${CUA_SANDBOX_NAME}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    volumes:
+      - ./trajectories:/tmp/agent_work:rw
     networks:
       - ai-village-network
     depends_on:
@@ -101,20 +105,37 @@ services:
     build:
       context: .
       dockerfile: agents/agent3/agent_worker/Dockerfile
+    env_file:
+      - .env
+      - agents/agent3/.env
     environment:
       - POSTGRES_URL=postgresql://hub:hubpassword@postgres:5432/hub
       - MONGODB_URL=mongodb://admin:password@mongodb:27017/agent_logs_db?authSource=admin
       - AGENT_ID=agent3
       - POLL_INTERVAL_SECONDS=5
       - RUN_TASK_TIMEOUT_SECONDS=300
-      - CUA_API_KEY=${CUA_API_KEY}
-      - CUA_SANDBOX_NAME=${CUA_SANDBOX_NAME}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    volumes:
+      - ./trajectories:/tmp/agent_work:rw
     networks:
       - ai-village-network
     depends_on:
       - postgres
       - mongodb
+    restart: unless-stopped
+
+  # Frontend - React app served by nginx
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_BASE: http://localhost:8000
+    ports:
+      - "3000:80"
+    networks:
+      - ai-village-network
+    depends_on:
+      - server
     restart: unless-stopped
 
 networks:
