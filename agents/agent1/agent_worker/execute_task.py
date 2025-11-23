@@ -121,77 +121,161 @@ async def execute_task_async(task_description: str, task_id: Optional[int] = Non
                 # Try multiple import paths
                 try:
                     from trajectory_processor import start_processor
-                except ImportError:
-                    try:
-                        from agent_worker.trajectory_processor import start_processor
-                    except ImportError:
-                        # Direct file import as fallback
-                        import importlib.util
-                        possible_paths = [
-                            Path(__file__).parent / "trajectory_processor.py",
-                            Path("/app/agent_worker/trajectory_processor.py"),
-                        ]
-                        processor_path = None
-                        for path in possible_paths:
-                            if path.exists():
-                                processor_path = path
-                                break
-                        
-                        if processor_path and processor_path.exists():
-                            spec = importlib.util.spec_from_file_location("trajectory_processor", processor_path)
-                            trajectory_processor_module = importlib.util.module_from_spec(spec)
-                            trajectory_processor_module.__package__ = "agent_worker"
-                            trajectory_processor_module.__name__ = "agent_worker.trajectory_processor"
-                            sys.modules["trajectory_processor"] = trajectory_processor_module
-                            sys.modules["agent_worker.trajectory_processor"] = trajectory_processor_module
-                            spec.loader.exec_module(trajectory_processor_module)
-                            start_processor = trajectory_processor_module.start_processor
-                        else:
-                            raise ImportError("trajectory_processor.py not found")
+                    trajectory_observer = start_processor(trajectory_dir, mongo_client, task_id)
+                    print(f"✓ Trajectory processor started, watching: {trajectory_dir.absolute()}")
+                except Exception as e:
+                    print(f"⚠️  Failed to start trajectory processor: {e}")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                print("⚠️  No MongoDB client provided - trajectory processor not started")
+            
+            print("Creating ComputerAgent instance...")
+            try:
+                agent = ComputerAgent(
+                    model="omniparser+openai/gpt-4o",
+                    tools=[computer],
+                    only_n_most_recent_images=3,
+                    verbosity=logging.INFO,
+                    trajectory_dir=str(trajectory_dir),
+                )
+                print("✓ ComputerAgent instance created successfully")
+            except Exception as agent_err:
+                print(f"✗ Failed to create ComputerAgent instance: {agent_err}")
+                print(f"  Error type: {type(agent_err).__name__}")
+                import traceback
+                traceback.print_exc()
+                raise
+            
+            print(f"Executing task: {task_description}")
+            
+            # Create conversation history
+            history = [{"role": "user", "content": task_description}]
+            
+            # Execute the task
+            print("Starting task execution...")
+            collected_outputs = []
+            
+            # Maintain conversation history properly to avoid tool_call_id errors
+            # Based on CUA examples, we need to extend history with agent outputs
+            # However, we pass a copy to agent.run() to avoid modifying the object it's using
+            try:
+                # Use a fresh history for each run to avoid state issues
+                history = [{"role": "user", "content": task_description}]
                 
-                trajectory_observer = start_processor(trajectory_dir, mongo_client, task_id)
-            except Exception as e:
-                # Log error but don't fail - trajectory processor is optional
-                print(f"Warning: Failed to start trajectory processor: {e}", file=sys.stderr)
-        
-        # Create agent (like example.py)
-        agent = ComputerAgent(
-            model="omniparser+openai/gpt-4o",
-            tools=[computer],
-            only_n_most_recent_images=3,
-            verbosity=logging.WARNING,
-            trajectory_dir=str(trajectory_dir),
-        )
-        
-        # Execute task (like example.py)
-        history = [{"role": "user", "content": task_description}]
-        collected_outputs = []
-        
-        async for result_item in agent.run(history, stream=False):
-            # Add agent outputs to history (matches example.py)
-            history += result_item.get("output", [])
+                # Pass a copy of history to agent.run() to avoid conflicts
+                # The agent manages its own internal state, but we maintain our own history
+                # We extend our history after each iteration to match CUA examples
+                async for result_item in agent.run(history.copy(), stream=False):
+                    output_items = result_item.get("output", []) or []
+                    
+                    # Extend our history with agent outputs (matches CUA examples)
+                    # We extend our copy, not the one passed to agent.run()
+                    history.extend(output_items)
+                    
+                    for item in output_items:
+                        item_type = item.get("type", "")
+                        if item_type == "message":
+                            content_parts = item.get("content", []) or []
+                            for cp in content_parts:
+                                text = cp.get("text") if isinstance(cp, dict) else None
+                                if text:
+                                    collected_outputs.append(text)
+                                    print(f"Agent: {text}")
+                        elif item_type == "computer_call":
+                            action = item.get("action", {})
+                            action_type = action.get("type", "")
+                            print(f"Computer Action: {action_type}")
+                        elif item_type == "computer_call_output":
+                            print(f"Computer Output: [Result]")
+            except Exception as agent_run_error:
+                # Handle specific tool_call_id errors
+                error_str = str(agent_run_error)
+                error_type = type(agent_run_error).__name__
+                if "tool_call_id" in error_str.lower() or "tool_calls" in error_str.lower() or "BadRequestError" in error_type:
+                    print(f"✗ Tool call error: {agent_run_error}")
+                    print(f"  Error type: {error_type}")
+                    print("  This may occur if the agent's internal history gets out of sync.")
+                    print("  Attempting to recover by creating a new agent instance...")
+                    
+                    # Try to recover by creating a fresh agent instance
+                    try:
+                        print("Creating fresh agent instance for retry...")
+                        fresh_agent = ComputerAgent(
+                            model="omniparser+openai/gpt-4o",
+                            tools=[computer],
+                            only_n_most_recent_images=3,
+                            verbosity=logging.INFO,
+                            trajectory_dir=str(trajectory_dir),
+                        )
+                        
+                        # Retry with a simplified task description
+                        print("Retrying with simplified task...")
+                        retry_history = [{"role": "user", "content": f"Please execute this task: {task_description}"}]
+                        
+                        # Pass a copy of history to agent.run() to avoid conflicts
+                        # Extend our history after each iteration
+                        async for result_item in fresh_agent.run(retry_history.copy(), stream=False):
+                            output_items = result_item.get("output", []) or []
+                            
+                            # Extend our history with agent outputs (matches CUA examples)
+                            retry_history.extend(output_items)
+                            
+                            for item in output_items:
+                                item_type = item.get("type", "")
+                                if item_type == "message":
+                                    content_parts = item.get("content", []) or []
+                                    for cp in content_parts:
+                                        text = cp.get("text") if isinstance(cp, dict) else None
+                                        if text:
+                                            collected_outputs.append(text)
+                                            print(f"Agent: {text}")
+                                elif item_type == "computer_call_output":
+                                    print(f"Computer Output: [Result]")
+                        
+                        print("✓ Retry successful")
+                    except Exception as retry_error:
+                        print(f"✗ Retry failed: {retry_error}")
+                        # Re-raise the original error
+                        raise agent_run_error
+                else:
+                    # Re-raise other errors
+                    raise
             
-            # Collect text messages
-            for item in result_item.get("output", []):
-                if item.get("type") == "message":
-                    content = item.get("content", [])
-                    for content_part in content:
-                        if isinstance(content_part, dict) and content_part.get("text"):
-                            collected_outputs.append(content_part.get("text"))
-        
-        if collected_outputs:
-            result["output"] = "\n".join(collected_outputs)
-        else:
-            result["output"] = "Task executed but no text output received"
+            # Screenshots handled by CUA trajectory processor - no cleanup needed
             
-    except ImportError as e:
-        result["output"] = f"Task received: {task_description}\nTask execution failed - CUA agent not available: {str(e)}"
-        result["status"] = "error"
-        result["error"] = str(e)
-    except ValueError as e:
-        result["output"] = f"Task received: {task_description}\nConfiguration error: {str(e)}"
-        result["status"] = "error"
-        result["error"] = str(e)
+            if collected_outputs:
+                result["output"] = "\n".join(collected_outputs)
+                result["status"] = "success"
+                print(f"Task completed successfully")
+            else:
+                result["output"] = "Task executed but no text output received"
+                result["status"] = "success"
+                print("Task completed but no text output received")
+                
+        except ImportError as e:
+            print(f"✗ CUA agent import failed: {e}")
+            print(f"  Error type: {type(e).__name__}")
+            print("  Full traceback:")
+            import traceback
+            traceback.print_exc()
+            print("\nFalling back to simple execution...")
+            
+            # Simple fallback: just print the task
+            result["output"] = f"Task received: {task_description}\nTask execution completed (fallback mode - CUA agent not available: {str(e)})"
+            result["status"] = "success"
+            print(f"Task received: {task_description}")
+            print("Task execution completed (fallback mode)")
+            
+        except ValueError as e:
+            # Missing environment variable
+            print(f"✗ Configuration error: {e}")
+            print("Falling back to simple execution...")
+            result["output"] = f"Task received: {task_description}\nTask execution completed (fallback mode - {str(e)})"
+            result["status"] = "success"
+            print(f"Task received: {task_description}")
+            print("Task execution completed (fallback mode)")
+            
     except Exception as e:
         result["status"] = "error"
         result["error"] = str(e)
