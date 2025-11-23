@@ -106,7 +106,7 @@ const AgentLiveFeed = () => {
             {/* Mini VNC Stream */}
             <VNCStreamMini 
               agentId={agentId}
-              vncUrl={vncUrl || "https://m-linux-aqnzbmas97.containers.cloud.trycua.com/vnc.html?autoconnect=true&password=479e9bdb455b566d"}
+              vncUrl={vncUrl}
             />
             
             {/* Overlay Progress */}
