@@ -14,7 +14,6 @@ import os
 import asyncio
 import logging
 from pathlib import Path
-from datetime import datetime
 from dotenv import load_dotenv
 from typing import Optional, Any
 
@@ -38,58 +37,8 @@ sys.path.insert(0, str(agent_worker_path))
 if Path("/app/agent_worker").exists():
     sys.path.insert(0, "/app")
     sys.path.insert(0, "/app/agent_worker")
-    # CUA might be at /app/CUA
     if Path("/app/CUA").exists():
         sys.path.insert(0, "/app/CUA")
-
-
-
-
-# Screenshots handled by CUA trajectory processor - no manual screenshot code needed
-
-
-def check_cua_packages():
-    """Check if CUA packages are installed and importable."""
-    diagnostics = {
-        "packages_installed": False,
-        "agent_importable": False,
-        "computer_importable": False,
-        "errors": []
-    }
-    
-    # Check if packages are installed via pip
-    try:
-        import subprocess
-        result = subprocess.run(
-            [sys.executable, "-m", "pip", "list"],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        if "cua-agent" in result.stdout.lower() or "cua-computer" in result.stdout.lower():
-            diagnostics["packages_installed"] = True
-    except Exception as e:
-        diagnostics["errors"].append(f"Failed to check pip list: {e}")
-    
-    # Try to import agent module
-    try:
-        import agent
-        diagnostics["agent_importable"] = True
-    except ImportError as e:
-        diagnostics["errors"].append(f"Failed to import agent module: {e}")
-    except Exception as e:
-        diagnostics["errors"].append(f"Unexpected error importing agent module: {e}")
-    
-    # Try to import computer module
-    try:
-        import computer
-        diagnostics["computer_importable"] = True
-    except ImportError as e:
-        diagnostics["errors"].append(f"Failed to import computer module: {e}")
-    except Exception as e:
-        diagnostics["errors"].append(f"Unexpected error importing computer module: {e}")
-    
-    return diagnostics
 
 
 def get_task_description():
@@ -110,109 +59,66 @@ async def execute_task_async(task_description: str, task_id: Optional[int] = Non
     
     Args:
         task_description: The task description to execute
+        task_id: Optional task ID for logging
+        mongo_client: Optional MongoDB client for trajectory processing
         
     Returns:
         Dictionary with execution results
     """
-    print(f"Executing task: {task_description}")
-    print("=" * 60)
-    
     result = {
         "status": "success",
         "output": "",
         "error": None
     }
     
-    # Run diagnostics first
-    print("\n=== CUA Package Diagnostics ===")
-    diagnostics = check_cua_packages()
-    print(f"Packages installed (via pip): {diagnostics['packages_installed']}")
-    print(f"Agent module importable: {diagnostics['agent_importable']}")
-    print(f"Computer module importable: {diagnostics['computer_importable']}")
-    if diagnostics['errors']:
-        print("Errors found:")
-        for error in diagnostics['errors']:
-            print(f"  - {error}")
-    print("=" * 60)
-    print()
-    
     try:
-        # Try to import and use CUA agent
-        try:
-            # First, check for required environment variables
-            cua_api_key = os.getenv("CUA_API_KEY")
-            cua_sandbox_name = os.getenv("CUA_SANDBOX_NAME", "default")
-            openai_api_key = os.getenv("OPENAI_API_KEY")
-            
-            print("Checking CUA environment variables...")
-            missing_vars = []
-            if not cua_api_key:
-                missing_vars.append("CUA_API_KEY")
-            if not openai_api_key:
-                missing_vars.append("OPENAI_API_KEY")
-            
-            if missing_vars:
-                raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
-            
-            print(f"✓ CUA_API_KEY is set (length: {len(cua_api_key)})")
-            print(f"✓ CUA_SANDBOX_NAME: {cua_sandbox_name}")
-            print(f"✓ OPENAI_API_KEY is set (length: {len(openai_api_key)})")
-            
-            # Import from cua packages (installed via pip as cua-agent, cua-computer)
-            # But imported as 'agent' and 'computer' modules
-            print("Attempting to import CUA packages...")
+        # Check for required environment variables
+        cua_api_key = os.getenv("CUA_API_KEY")
+        cua_sandbox_name = os.getenv("CUA_SANDBOX_NAME", "default")
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        
+        if not cua_api_key or not openai_api_key:
+            missing = [k for k, v in [("CUA_API_KEY", cua_api_key), ("OPENAI_API_KEY", openai_api_key)] if not v]
+            raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
+        
+        # Import CUA packages
+        from agent import ComputerAgent
+        from computer import Computer, VMProviderType
+        
+        # Create computer instance
+        computer = Computer(
+            os_type="linux",
+            api_key=cua_api_key,
+            name=cua_sandbox_name,
+            provider_type=VMProviderType.CLOUD,
+        )
+        
+        # Set up trajectory directory (like example.py)
+        # Use workdir if provided, otherwise current directory
+        workdir = os.getenv("WORKDIR")
+        if workdir:
+            trajectory_dir = Path(workdir) / "trajectories"
+        else:
+            trajectory_dir = Path("trajectories")
+        
+        # CUA will create the directory structure automatically
+        # But we ensure parent exists so it's visible
+        trajectory_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Start trajectory processor if MongoDB client provided
+        trajectory_observer = None
+        if mongo_client:
             try:
-                from agent import ComputerAgent
-                print("✓ Successfully imported ComputerAgent from agent module")
-            except ImportError as import_err:
-                print(f"✗ Failed to import ComputerAgent from agent module: {import_err}")
-                print(f"  Import error details: {type(import_err).__name__}: {import_err}")
-                import traceback
-                traceback.print_exc()
-                raise
-            
-            try:
-                from computer import Computer, VMProviderType
-                print("✓ Successfully imported Computer and VMProviderType from computer module")
-            except ImportError as import_err:
-                print(f"✗ Failed to import Computer/VMProviderType from computer module: {import_err}")
-                print(f"  Import error details: {type(import_err).__name__}: {import_err}")
-                import traceback
-                traceback.print_exc()
-                raise
-            
-            print("Initializing CUA agent...")
-            
-            # Create computer instance
-            print("Creating Computer instance...")
-            try:
-                computer = Computer(
-                    os_type="linux",
-                    api_key=cua_api_key,
-                    name=cua_sandbox_name,
-                    provider_type=VMProviderType.CLOUD,
-                )
-                print("✓ Computer instance created successfully")
-            except Exception as comp_err:
-                print(f"✗ Failed to create Computer instance: {comp_err}")
-                print(f"  Error type: {type(comp_err).__name__}")
-                import traceback
-                traceback.print_exc()
-                raise
-            
-            # Create agent with trajectory_dir - CUA handles screenshots automatically
-            # Use workdir if provided, otherwise current directory
-            workdir = os.getenv("WORKDIR")
-            if workdir:
-                trajectory_dir = Path(workdir) / "trajectories"
-            else:
-                trajectory_dir = Path("trajectories")
-            trajectory_dir.mkdir(parents=True, exist_ok=True)
-            print(f"📁 Trajectory directory: {trajectory_dir.absolute()}")
-            
-            # Start trajectory processor if MongoDB client provided
-            trajectory_observer = None
-            if mongo_client:
+                # Ensure agent_worker directory is in path for imports
+                agent_worker_dir = str(Path(__file__).parent)
+                if agent_worker_dir not in sys.path:
+                    sys.path.insert(0, agent_worker_dir)
+                
+                # Also try /app/agent_worker if in Docker
+                if Path("/app/agent_worker").exists() and "/app/agent_worker" not in sys.path:
+                    sys.path.insert(0, "/app/agent_worker")
+                
+                # Try multiple import paths
                 try:
                     from trajectory_processor import start_processor
                     trajectory_observer = start_processor(trajectory_dir, mongo_client, task_id)
@@ -276,13 +182,6 @@ async def execute_task_async(task_description: str, task_id: Optional[int] = Non
                                 if text:
                                     collected_outputs.append(text)
                                     print(f"Agent: {text}")
-                                    if mongo_client:
-                                        mongo_client.write_log(
-                                            task_id=task_id,
-                                            level="info",
-                                            message=text,
-                                            meta={"source": "agent_output"}
-                                        )
                         elif item_type == "computer_call":
                             action = item.get("action", {})
                             action_type = action.get("type", "")
@@ -331,13 +230,6 @@ async def execute_task_async(task_description: str, task_id: Optional[int] = Non
                                         if text:
                                             collected_outputs.append(text)
                                             print(f"Agent: {text}")
-                                            if mongo_client:
-                                                mongo_client.write_log(
-                                                    task_id=task_id,
-                                                    level="info",
-                                                    message=text,
-                                                    meta={"source": "agent_output"}
-                                                )
                                 elif item_type == "computer_call_output":
                                     print(f"Computer Output: [Result]")
                         
@@ -387,10 +279,7 @@ async def execute_task_async(task_description: str, task_id: Optional[int] = Non
     except Exception as e:
         result["status"] = "error"
         result["error"] = str(e)
-        print(f"✗ ERROR: Failed to execute task: {e}")
-        print(f"  Error type: {type(e).__name__}")
-        import traceback
-        traceback.print_exc()
+        print(f"Error executing task: {e}", file=sys.stderr)
     
     return result
 
@@ -446,11 +335,6 @@ def main():
         return
     
     # Single task execution mode
-    print("=" * 60)
-    print("AGENT WORKER TASK EXECUTOR")
-    print("=" * 60)
-    print()
-    
     # Get task_id and mongo_client from environment if available
     task_id = None
     mongo_client = None
@@ -469,36 +353,19 @@ def main():
             from db_adapters import MongoClientWrapper
             mongo_client = MongoClientWrapper(mongo_uri, agent_id)
         except Exception as e:
-            print(f"Warning: Failed to initialize MongoDB client: {e}")
+            print(f"Warning: Failed to initialize MongoDB client: {e}", file=sys.stderr)
     
     result = execute_task(task_description, task_id=task_id, mongo_client=mongo_client)
     
-    print()
-    print("=" * 60)
-    print("EXECUTION RESULT")
-    print("=" * 60)
-    print(f"Status: {result['status']}")
-    if result.get('output'):
-        print(f"Output:\n{result['output']}")
-    if result.get('error'):
-        print(f"Error: {result['error']}")
-    
-    # Output the response in a structured format that can be easily extracted
-    # This marker helps runner.py extract just the agent response
-    print()
-    print("=" * 60)
+    # Output only the clean agent response (no diagnostics)
     print("AGENT_RESPONSE_START")
-    print("=" * 60)
-    if result['output']:
-        # Output just the agent response, not diagnostics
-        print(result['output'])
-    elif result['error']:
+    if result.get('output'):
+        print(result['output'].strip())
+    elif result.get('error'):
         print(f"Error: {result['error']}")
     else:
         print("No output or error")
-    print("=" * 60)
     print("AGENT_RESPONSE_END")
-    print("=" * 60)
     
     # Exit with appropriate code
     if result['status'] == 'success':

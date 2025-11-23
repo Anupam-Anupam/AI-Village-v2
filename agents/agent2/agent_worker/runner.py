@@ -11,8 +11,8 @@ from typing import Optional
 from datetime import datetime
 from uuid import uuid4
 
-from .config import Config
-from .db_adapters import PostgresClient, MongoClientWrapper
+from agent_worker.config import Config
+from agent_worker.db_adapters import PostgresClient, MongoClientWrapper
 
 
 # Removed: list_new_screenshots - CUA trajectory processor handles screenshots

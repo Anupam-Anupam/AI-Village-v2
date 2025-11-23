@@ -234,16 +234,17 @@ const ChatTerminal = () => {
         padding: '20px',
         display: 'flex',
         flexDirection: 'column',
-        gap: '15px'
+        gap: '15px',
+        backgroundColor: '#151c19'
       }}>
         {historyLoading && (
-          <div style={{ color: '#8892b0', fontSize: '0.95rem' }}>
+          <div style={{ color: '#a9b0c5', fontSize: '0.95rem' }}>
             Loading conversation…
           </div>
         )}
 
         {!historyLoading && messages.length === 0 && !historyError && (
-          <div style={{ color: '#8892b0', fontSize: '0.95rem' }}>
+          <div style={{ color: '#a9b0c5', fontSize: '0.95rem' }}>
             Waiting for agent responses…
           </div>
         )}
@@ -262,24 +263,24 @@ const ChatTerminal = () => {
 
         {messages.map((message) => {
           const accentColor = message.sender === 'user'
-            ? '#1e90ff'
+            ? '#f4bf67'
             : message.sender === 'system'
-              ? '#8892b0'
-              : '#64ffda';
+              ? '#7ab8ff'
+              : '#88d6a4';
 
           return (
             <div
               key={message.id}
               style={{
                 padding: '12px 16px',
-                borderRadius: '8px',
+                borderRadius: '12px',
                 backgroundColor: message.sender === 'user'
-                  ? 'rgba(30, 144, 255, 0.1)'
+                  ? 'rgba(244, 191, 103, 0.16)'
                   : message.sender === 'system'
-                    ? 'rgba(136, 146, 176, 0.1)'
-                    : 'rgba(100, 255, 218, 0.08)',
+                    ? 'rgba(122, 184, 255, 0.14)'
+                    : 'rgba(136, 214, 164, 0.14)',
                 borderLeft: `3px solid ${accentColor}`,
-                color: accentColor,
+                color: '#f6f1e6',
                 display: 'flex',
                 flexDirection: 'column',
                 gap: '8px'
@@ -290,13 +291,13 @@ const ChatTerminal = () => {
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'center',
-                opacity: 0.85
+                opacity: 0.86
               }}>
                 <span style={{ fontWeight: 'bold' }}>
                   {getSenderLabel(message)}
                 </span>
                 {!message.isThinking && (
-                  <span>{formatTime(message.timestamp)}</span>
+                  <span style={{ fontSize: '0.75rem', color: '#868ea4' }}>{formatTime(message.timestamp)}</span>
                 )}
               </div>
               <div style={{
@@ -330,10 +331,10 @@ const ChatTerminal = () => {
                 <div style={{
                   fontSize: '0.75rem',
                   color: accentColor,
-                  opacity: 0.75,
+                  opacity: 0.9,
                   display: 'flex',
                   flexWrap: 'wrap',
-                  gap: '12px'
+                  gap: '10px'
                 }}>
                   {message.taskId && <span>Task #{message.taskId}</span>}
                   {message.taskTitle && <span>{message.taskTitle}</span>}
@@ -362,8 +363,8 @@ const ChatTerminal = () => {
 
       <form onSubmit={handleSubmit} style={{
         padding: '15px',
-        backgroundColor: 'rgba(10, 25, 47, 0.9)',
-        borderTop: '1px solid rgba(100, 255, 218, 0.2)',
+        backgroundColor: 'rgba(17, 20, 33, 0.98)',
+        borderTop: '1px solid rgba(90, 101, 149, 0.9)',
         display: 'flex',
         gap: '10px'
       }}>
@@ -376,10 +377,10 @@ const ChatTerminal = () => {
           style={{
             flex: 1,
             padding: '12px 15px',
-            backgroundColor: 'rgba(10, 25, 47, 0.8)',
-            border: '1px solid rgba(100, 255, 218, 0.2)',
-            borderRadius: '8px',
-            color: '#ccd6f6',
+            backgroundColor: '#121623',
+            border: '1px solid rgba(90, 101, 149, 0.9)',
+            borderRadius: '999px',
+            color: '#f6f1e6',
             fontSize: '0.95rem',
             outline: 'none'
           }}

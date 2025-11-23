@@ -227,7 +227,7 @@ async def execute_task_async(task_description: str, task_id: Optional[int] = Non
             print("Creating ComputerAgent instance...")
             try:
                 agent = ComputerAgent(
-                    model="omniparser+openai/gpt-4o",
+                    model="omniparser+openai/gpt-5",
                     tools=[computer],
                     only_n_most_recent_images=3,
                     verbosity=logging.INFO,

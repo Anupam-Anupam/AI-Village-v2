@@ -19,7 +19,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from storage import MongoAdapter, PostgresAdapter
 
-from .agent_manager import AgentManager
+from agent_manager import AgentManager
 
 # Initialize FastAPI app
 app = FastAPI(
