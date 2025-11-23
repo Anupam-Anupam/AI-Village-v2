@@ -100,17 +100,41 @@ class DataCollector:
         return data
 
     def collect_all(self) -> List[Dict[str, Any]]:
-        tasks = self.pg.get_all_tasks()
+        """
+        Collect data for the most recent task only (not all tasks).
+        The evaluator should focus on evaluating the latest task in the system.
+        """
+        # Get recent tasks from PostgreSQL
+        tasks = self.pg.get_tasks(limit=100)
+        if not tasks:
+            self.logger.warning(json.dumps({"event": "no_tasks_found"}))
+            return []
+        
+        # Find the task with the greatest ID (most recent)
+        most_recent_task = max(
+            tasks,
+            key=lambda t: int(t.get("id") or 0)
+        )
+        
+        task_id = self._normalize_id(most_recent_task.get("id"))
+        agent_id = self._normalize_id(most_recent_task.get("agent_id"))
+        
+        if not task_id:
+            self.logger.error(json.dumps({"event": "invalid_task_id", "task": most_recent_task}))
+            return []
+        
         results: List[Dict[str, Any]] = []
-        for t in tasks:
-            task_id = self._normalize_id(t.get("task_id") or t.get("id"))
-            agent_id = self._normalize_id(t.get("agent_id"))
-            if not task_id:
-                continue
-            try:
-                results.append(self.collect_for_task(agent_id, task_id))
-            except Exception as e:
-                self.logger.error(json.dumps({"event": "collect_task_error", "task_id": task_id, "error": str(e)}))
+        try:
+            results.append(self.collect_for_task(agent_id, task_id))
+            self.logger.info(json.dumps({
+                "event": "collecting_most_recent_task",
+                "task_id": task_id,
+                "agent_id": agent_id,
+                "status": most_recent_task.get("status")
+            }))
+        except Exception as e:
+            self.logger.error(json.dumps({"event": "collect_task_error", "task_id": task_id, "error": str(e)}))
+        
         return results
 
     def collect_snapshots_for_task(self, agent_id: Optional[str], task_id: str) -> List[Dict[str, Any]]:
