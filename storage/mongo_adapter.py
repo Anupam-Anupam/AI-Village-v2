@@ -103,7 +103,6 @@ class MongoAdapter:
         self.logs = self.db.agent_logs
         self.memories = self.db.agent_memories
         self.config = self.db.agent_config
-        self.screenshots = self.db.screenshots
         
         # Create indexes
         self.logs.create_index("agent_id")
@@ -116,10 +115,6 @@ class MongoAdapter:
         self.memories.create_index("memory_type")
         
         self.config.create_index("key", unique=True)
-        
-        self.screenshots.create_index("agent_id")
-        self.screenshots.create_index("task_id")
-        self.screenshots.create_index("uploaded_at")
     
     def write_log(
         self,
