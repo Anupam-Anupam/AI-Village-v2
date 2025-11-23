@@ -187,16 +187,30 @@ class MongoAdapter:
                 
                 try:
                     client = MongoClient(db_url)
+                    db = client[db_name]
+                    
+                    # Check if database exists by listing collections
+                    # If the agent hasn't started yet, the database won't exist
+                    collections = db.list_collection_names()
+                    
                     self.databases[db_name] = {
                         "client": client,
-                        "db": client[db_name],
-                        "logs": client[db_name].agent_logs
+                        "db": db,
+                        "logs": db.agent_logs,
+                        "initialized": len(collections) > 0
                     }
                 except Exception as e:
-                    raise ValueError(f"Failed to connect to {db_name}: {e}")
+                    # Return empty list instead of raising error if agent database doesn't exist yet
+                    # This is expected when agents haven't started or haven't written any logs
+                    return []
+            
+            # Return empty list if database exists but isn't initialized (no collections)
+            if db_name in self.databases and not self.databases[db_name].get("initialized", False):
+                return []
             
             if db_name not in self.databases or "logs" not in self.databases[db_name]:
-                raise ValueError(f"Database {db_name} not properly initialized")
+                # Database connection failed or logs collection not found
+                return []
             
             logs_collection = self.databases[db_name]["logs"]
         else:
@@ -286,12 +300,30 @@ class MongoAdapter:
                 else:
                     db_url = f"{self.connection_string}/{db_name}?authSource=admin"
                 
-                client = MongoClient(db_url)
-                self.databases[db_name] = {
-                    "client": client,
-                    "db": client[db_name],
-                    "memories": client[db_name].agent_memories
-                }
+                try:
+                    client = MongoClient(db_url)
+                    db = client[db_name]
+                    
+                    # Check if database exists by listing collections
+                    collections = db.list_collection_names()
+                    
+                    self.databases[db_name] = {
+                        "client": client,
+                        "db": db,
+                        "memories": db.agent_memories,
+                        "initialized": len(collections) > 0
+                    }
+                except Exception as e:
+                    # Return empty list if agent database doesn't exist yet
+                    return []
+            
+            # Return empty list if database exists but isn't initialized
+            if db_name in self.databases and not self.databases[db_name].get("initialized", False):
+                return []
+            
+            if db_name not in self.databases or "memories" not in self.databases[db_name]:
+                return []
+            
             memories_collection = self.databases[db_name]["memories"]
         else:
             if not self.cluster_mode and agent_id and agent_id != self.agent_id:
@@ -338,6 +370,72 @@ class MongoAdapter:
             )
         
         return results
+    
+    def get_screenshots(
+        self,
+        agent_id: Optional[str] = None,
+        limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """
+        Get screenshots from MongoDB.
+        
+        Args:
+            agent_id: Agent identifier (required if not cluster mode)
+            limit: Maximum number of screenshots to return
+            
+        Returns:
+            List of screenshot documents
+        """
+        if self.cluster_mode:
+            if not agent_id:
+                raise ValueError("agent_id required in cluster mode")
+            db_name = f"{agent_id}db"
+            if db_name not in self.databases:
+                # Parse connection string to construct agent-specific URL
+                if '?' in self.connection_string:
+                    base_url, query_params = self.connection_string.split('?', 1)
+                    db_url = f"{base_url}/{db_name}?{query_params}"
+                else:
+                    db_url = f"{self.connection_string}/{db_name}?authSource=admin"
+                
+                try:
+                    client = MongoClient(db_url)
+                    db = client[db_name]
+                    
+                    # Check if database exists by listing collections
+                    collections = db.list_collection_names()
+                    
+                    self.databases[db_name] = {
+                        "client": client,
+                        "db": db,
+                        "screenshots": db.screenshots,
+                        "initialized": len(collections) > 0
+                    }
+                except Exception as e:
+                    # Return empty list if agent database doesn't exist yet
+                    return []
+            
+            # Return empty list if database exists but isn't initialized
+            if db_name in self.databases and not self.databases[db_name].get("initialized", False):
+                return []
+            
+            if db_name not in self.databases or "screenshots" not in self.databases[db_name]:
+                return []
+            
+            screenshots_collection = self.databases[db_name]["screenshots"]
+        else:
+            if agent_id and agent_id != self.agent_id:
+                raise ValueError(f"Cannot read screenshots from different agent in single mode.")
+            screenshots_collection = self.screenshots
+        
+        query = {}
+        if agent_id and self.cluster_mode:
+            query["agent_id"] = agent_id
+        elif not self.cluster_mode:
+            query["agent_id"] = self.agent_id
+        
+        cursor = screenshots_collection.find(query).sort("uploaded_at", -1).limit(limit)
+        return list(cursor)
     
     def fetch_task_logs(
         self,

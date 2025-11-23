@@ -1,62 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { API_BASE, REFRESH_INTERVALS } from '../config';
-
-// Utility: ensure we have a Date object
-const ensureDate = (val) => {
-  if (val instanceof Date) return val;
-  if (typeof val === 'string' || typeof val === 'number') {
-    const d = new Date(val);
-    return isNaN(d.getTime()) ? new Date() : d;
-  }
-  return new Date();
-};
-
-// Normalize progress percent to 0-100
-const normalizePercent = (val) => {
-  if (val == null || val === '') return null;
-  const num = parseFloat(val);
-  if (isNaN(num)) return null;
-  return Math.max(0, Math.min(100, num));
-};
-
-const formatPercentLabel = (val) => {
-  const p = normalizePercent(val);
-  return p !== null ? `${Math.round(p)}%` : null;
-};
-
-// Build a chat message from agent response data
-const buildAgentMessage = (item) => {
-  if (!item || !item.id) return null;
-  return {
-    id: item.id,
-    agentId: item.agent_id || 'unknown',
-    sender: 'agent',
-    text: item.message || '',
-    timestamp: ensureDate(item.timestamp),
-    progressPercent: item.progress_percent,
-    taskId: item.task?.id || item.task_id,
-    taskTitle: item.task?.title,
-    taskStatus: item.task?.status,
-  };
-};
-
-const formatTime = (date) => {
-  if (!date) {
-    return '—';
-  }
-  const safeDate = ensureDate(date);
-  return safeDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-};
-
-const getSenderLabel = (message) => {
-  if (message.sender === 'user') {
-    return 'You';
-  }
-  if (message.sender === 'system') {
-    return 'System';
-  }
-  return message.agentId || 'Agent';
-};
+import { ensureDate, normalizePercent, formatPercentLabel, buildAgentMessage, formatTime } from '../utils/chatUtils';
 
 const ChatTerminal = () => {
   const [messages, setMessages] = useState([]);
@@ -103,6 +47,13 @@ const ChatTerminal = () => {
       }
       
       const response = await fetch(url);
+      
+      // Check content-type before parsing JSON
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        throw new Error('Received non-JSON response from server');
+      }
+
       const data = await response.json();
 
       if (!response.ok) {
@@ -215,6 +166,13 @@ const ChatTerminal = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: taskText, timestamp: taskTimestamp.toISOString() }),
       });
+
+      // Check content-type before parsing JSON
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        throw new Error('Received non-JSON response from server');
+      }
+
       const data = await response.json();
 
       setMessages((prev) => prev.filter((msg) => !msg.isThinking));
@@ -242,14 +200,15 @@ const ChatTerminal = () => {
   };
 
   return (
-    <div className="chat-terminal">
-      <header className="chat-terminal__header">
-        <div>
-          <div className="chat-terminal__title">Agent Playground</div>
-          <div className="chat-terminal__subtitle">Share a task and watch the agents report back.</div>
-        </div>
-      </header>
-
+    <div className="chat-terminal" style={{ 
+      height: '100%', 
+      display: 'flex', 
+      flexDirection: 'column',
+      backgroundColor: 'transparent',
+      position: 'relative',
+      overflow: 'hidden'
+    }}>
+      {/* Chat content with higher z-index */}
       <div 
         ref={messagesContainerRef}
         onScroll={checkScrollPosition}
@@ -259,174 +218,178 @@ const ChatTerminal = () => {
           padding: '20px',
           display: 'flex',
           flexDirection: 'column',
-          gap: '15px',
-          backgroundColor: '#151c19',
-          position: 'relative'
+          gap: '24px',
+          backgroundColor: 'transparent',
+          position: 'relative',
+          alignItems: 'center',
+          zIndex: 1
         }}
       >
-        {historyLoading && (
-          <div style={{ color: '#a9b0c5', fontSize: '0.95rem' }}>
-            Loading conversation…
-          </div>
-        )}
+        <div style={{ width: '100%', maxWidth: '800px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
+          {historyLoading && (
+            <div style={{ color: '#a3a3a3', fontSize: '0.95rem', textAlign: 'center', marginTop: '20px' }}>
+              Loading conversation…
+            </div>
+          )}
 
-        {!historyLoading && messages.length === 0 && !historyError && (
-          <div style={{ color: '#a9b0c5', fontSize: '0.95rem' }}>
-            Waiting for agent responses…
-          </div>
-        )}
+          {!historyLoading && messages.length === 0 && !historyError && (
+            <div style={{ color: '#a3a3a3', fontSize: '0.95rem', textAlign: 'center', marginTop: '40px' }}>
+              <div style={{ fontSize: '2rem', marginBottom: '16px' }}>👋</div>
+              <div style={{ fontWeight: 600, color: '#e5e5e5', marginBottom: '8px' }}>Welcome to AI Village</div>
+              <div>Enter a task below to start the swarm.</div>
+            </div>
+          )}
 
-        {historyError && (
-          <div style={{
-            color: '#ff6b6b',
-            backgroundColor: 'rgba(255, 107, 107, 0.1)',
-            border: '1px solid rgba(255, 107, 107, 0.3)',
-            borderRadius: '8px',
-            padding: '12px 16px'
-          }}>
-            {historyError}
-          </div>
-        )}
+          {historyError && (
+            <div style={{
+              color: '#f87171',
+              backgroundColor: 'rgba(239, 68, 68, 0.1)',
+              border: '1px solid rgba(239, 68, 68, 0.2)',
+              borderRadius: '8px',
+              padding: '12px 16px',
+              textAlign: 'center'
+            }}>
+              {historyError}
+            </div>
+          )}
 
-        {messages.map((message) => {
-          // Agent color mapping for group chat style
-          const agentColors = {
-            'agent1': { bg: '#88d6a4', name: 'Agent 1', emoji: '🤖' },
-            'agent2': { bg: '#7ab8ff', name: 'Agent 2', emoji: '🦾' },
-            'agent3': { bg: '#f4bf67', name: 'Agent 3', emoji: '🧠' },
-            'system': { bg: '#a9b0c5', name: 'System', emoji: '⚙️' },
-            'user': { bg: '#e89ac7', name: 'You', emoji: '👤' }
-          };
+          {messages.map((message) => {
+            // Updated color mapping for dark purple theme
+            // Using darker backgrounds with purple accents
+            const agentColors = {
+              'agent1': { bg: 'rgba(6, 78, 59, 0.4)', text: '#34d399', name: 'Agent 1', emoji: '🤖', border: '#065f46' },
+              'agent2': { bg: 'rgba(30, 64, 175, 0.4)', text: '#60a5fa', name: 'Agent 2', emoji: '🦾', border: '#1e40af' },
+              'agent3': { bg: 'rgba(124, 58, 237, 0.3)', text: '#a78bfa', name: 'Agent 3', emoji: '🧠', border: '#6d28d9' },
+              'system': { bg: 'rgba(38, 38, 38, 0.6)', text: '#a3a3a3', name: 'System', emoji: '⚙️', border: '#404040' },
+              'user': { bg: 'rgba(38, 38, 38, 0.6)', text: '#a3a3a3', name: 'You', emoji: '👤', border: '#404040' }
+            };
 
-          const agentInfo = agentColors[message.agentId] || agentColors[message.sender] || agentColors['system'];
-
-          return (
-            <div
-              key={message.id}
-              style={{
-                display: 'flex',
-                gap: '12px',
-                alignItems: 'flex-start'
-              }}
-            >
-              {/* Avatar */}
-              <div style={{
-                width: '40px',
-                height: '40px',
-                borderRadius: '50%',
-                backgroundColor: agentInfo.bg,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: '1.3rem',
-                flexShrink: 0,
-                boxShadow: '0 2px 8px rgba(0,0,0,0.2)'
-              }}>
-                {agentInfo.emoji}
-              </div>
-
-              {/* Message bubble */}
-              <div style={{
-                flex: 1,
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '6px'
-              }}>
-                {/* Header: name and time */}
+            const agentInfo = agentColors[message.agentId] || agentColors[message.sender] || agentColors['system'];
+            
+            return (
+              <div
+                key={message.id}
+                style={{
+                  display: 'flex',
+                  gap: '16px',
+                  alignItems: 'flex-start',
+                  padding: '4px 0'
+                }}
+              >
+                {/* Avatar */}
                 <div style={{
+                  width: '36px',
+                  height: '36px',
+                  borderRadius: '4px', 
+                  backgroundColor: agentInfo.bg,
+                  color: agentInfo.text,
                   display: 'flex',
                   alignItems: 'center',
-                  gap: '8px',
-                  fontSize: '0.85rem'
+                  justifyContent: 'center',
+                  fontSize: '1.2rem',
+                  flexShrink: 0,
+                  boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+                  border: `1px solid ${agentInfo.border}`,
+                  backdropFilter: 'blur(8px)'
                 }}>
-                  <span style={{ 
-                    fontWeight: 'bold',
-                    color: agentInfo.bg
-                  }}>
-                    {agentInfo.name}
-                  </span>
-                  {!message.isThinking && (
-                    <span style={{ 
-                      fontSize: '0.75rem', 
-                      color: '#868ea4',
-                      opacity: 0.8
-                    }}>
-                      {formatTime(message.timestamp)}
-                    </span>
-                  )}
+                  {agentInfo.emoji}
                 </div>
 
-                {/* Message content bubble */}
+                {/* Message body */}
                 <div style={{
-                  backgroundColor: '#2a3530',
-                  padding: '12px 16px',
-                  borderRadius: '12px',
-                  borderTopLeftRadius: '4px',
-                  color: '#e0e8e5',
-                  fontSize: '0.95rem',
-                  lineHeight: '1.5',
-                  wordBreak: 'break-word',
-                  boxShadow: '0 1px 3px rgba(0,0,0,0.15)',
-                  position: 'relative'
+                  flex: 1,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '6px',
+                  padding: '16px',
+                  backgroundColor: 'rgba(38, 38, 38, 0.55)',
+                  borderRadius: '16px',
+                  border: '1px solid rgba(255, 255, 255, 0.05)',
+                  backdropFilter: 'blur(4px)'
                 }}>
+                  {/* Header */}
                   <div style={{
                     display: 'flex',
-                    flexWrap: 'wrap',
-                    gap: '8px',
-                    alignItems: 'center'
+                    alignItems: 'baseline',
+                    gap: '10px',
+                    fontSize: '0.9rem'
                   }}>
-                    <span>{message.text ? String(message.text) : ''}</span>
-                    {message.isThinking && (
-                      <span style={{ display: 'inline-flex', gap: '4px' }}>
-                        <span style={{ animation: 'blink 1.4s infinite' }}>.</span>
-                        <span style={{ animation: 'blink 1.4s infinite 0.2s' }}>.</span>
-                        <span style={{ animation: 'blink 1.4s infinite 0.4s' }}>.</span>
+                    <span style={{ 
+                      fontWeight: 600,
+                      color: '#e5e5e5'
+                    }}>
+                      {agentInfo.name}
+                    </span>
+                    {!message.isThinking && (
+                      <span style={{ 
+                        fontSize: '0.75rem', 
+                        color: '#737373',
+                      }}>
+                        {formatTime(message.timestamp)}
                       </span>
                     )}
                   </div>
 
-                  {/* Progress badge */}
-                  {!message.isThinking && formatPercentLabel(message.progressPercent) && (
-                    <div style={{
-                      marginTop: '8px',
-                      display: 'inline-block'
-                    }}>
-                      <span style={{
-                        padding: '4px 10px',
-                        borderRadius: '12px',
-                        backgroundColor: agentInfo.bg,
-                        color: '#1a2420',
-                        fontSize: '0.8rem',
-                        fontWeight: 'bold',
-                        boxShadow: '0 1px 3px rgba(0,0,0,0.2)'
-                      }}>
-                        {formatPercentLabel(message.progressPercent)}
-                      </span>
+                  {/* Content */}
+                  <div style={{
+                    color: '#d4d4d4',
+                    fontSize: '1rem',
+                    lineHeight: '1.6',
+                    wordBreak: 'break-word',
+                  }}>
+                    <div style={{ whiteSpace: 'pre-wrap' }}>
+                      {message.text ? String(message.text) : ''}
+                      {message.isThinking && (
+                        <span style={{ display: 'inline-flex', gap: '4px', marginLeft: '4px' }}>
+                          <span style={{ animation: 'blink 1.4s infinite' }}>.</span>
+                          <span style={{ animation: 'blink 1.4s infinite 0.2s' }}>.</span>
+                          <span style={{ animation: 'blink 1.4s infinite 0.4s' }}>.</span>
+                        </span>
+                      )}
                     </div>
-                  )}
 
-                  {/* Task metadata */}
-                  {(message.taskId || message.taskTitle || message.taskStatus) && (
-                    <div style={{
-                      marginTop: '8px',
-                      fontSize: '0.75rem',
-                      color: '#a9b0c5',
-                      display: 'flex',
-                      flexWrap: 'wrap',
-                      gap: '8px',
-                      opacity: 0.8
-                    }}>
-                      {message.taskId && <span>#{message.taskId}</span>}
-                      {message.taskTitle && <span>• {message.taskTitle}</span>}
-                      {message.taskStatus && <span>• {message.taskStatus}</span>}
-                    </div>
-                  )}
+                    {/* Progress badge */}
+                    {!message.isThinking && formatPercentLabel(message.progressPercent) && (
+                      <div style={{
+                        marginTop: '12px',
+                        display: 'inline-block'
+                      }}>
+                        <span style={{
+                          padding: '4px 10px',
+                          borderRadius: '12px',
+                          backgroundColor: 'rgba(124, 58, 237, 0.15)',
+                          border: '1px solid rgba(124, 58, 237, 0.3)',
+                          color: '#a78bfa',
+                          fontSize: '0.8rem',
+                          fontWeight: '500'
+                        }}>
+                          Progress: {formatPercentLabel(message.progressPercent)}
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Task metadata */}
+                    {(message.taskId || message.taskTitle || message.taskStatus) && (
+                      <div style={{
+                        marginTop: '8px',
+                        fontSize: '0.8rem',
+                        color: '#737373',
+                        display: 'flex',
+                        flexWrap: 'wrap',
+                        gap: '12px',
+                      }}>
+                        {message.taskId && <span>ID: {message.taskId}</span>}
+                        {message.taskStatus && <span>Status: {message.taskStatus}</span>}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
-          );
-        })}
-        <div ref={messagesEndRef} />
+            );
+          })}
+          <div ref={messagesEndRef} />
+        </div>
+        
         {showScrollButton && (
           <button 
             className={`scroll-to-bottom-button ${showScrollButton ? 'show' : ''}`}
@@ -442,42 +405,68 @@ const ChatTerminal = () => {
         )}
       </div>
 
-      <form onSubmit={handleSubmit} style={{
-        padding: '15px',
-        backgroundColor: '#2e3a36',
-        borderTop: '1px solid rgba(255, 255, 255, 0.06)',
+      <div style={{
+        padding: '24px',
+        width: '100%',
         display: 'flex',
-        gap: '10px'
+        justifyContent: 'center',
+        background: 'linear-gradient(to top, #0a0a0a 80%, transparent)',
+        paddingBottom: '40px',
+        zIndex: 1,
+        position: 'relative'
       }}>
-        <input
-          type="text"
-          value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-          placeholder="Enter a joyful mission for the agents…"
-          disabled={isLoading}
-          style={{
-            flex: 1,
-            padding: '12px 15px',
-            backgroundColor: '#3a4a45',
-            border: '1px solid rgba(255, 255, 255, 0.06)',
-            borderRadius: '999px',
-            color: '#e0e8e5',
-            fontSize: '0.95rem',
-            outline: 'none'
-          }}
-        />
-        <button
-          type="submit"
-          disabled={!inputValue.trim() || isLoading}
-          className="chat-terminal__send"
-        >
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <line x1="22" y1="2" x2="11" y2="13"></line>
-            <path d="M22 2L15 22 11 13 2 9 22 2z"></path>
-          </svg>
-          Send
-        </button>
-      </form>
+        <form onSubmit={handleSubmit} style={{
+          maxWidth: '800px',
+          width: '100%',
+          position: 'relative'
+        }}>
+          <input
+            type="text"
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            placeholder="Send a message to the agents..."
+            disabled={isLoading}
+            style={{
+              width: '100%',
+              padding: '16px 50px 16px 20px',
+              backgroundColor: 'rgba(26, 26, 26, 0.8)',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+              borderRadius: '16px',
+              color: '#e5e5e5',
+              fontSize: '1rem',
+              outline: 'none',
+              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.4)',
+              backdropFilter: 'blur(12px)'
+            }}
+          />
+          <button
+            type="submit"
+            disabled={!inputValue.trim() || isLoading}
+            style={{
+              position: 'absolute',
+              right: '12px',
+              top: '50%',
+              transform: 'translateY(-50%)',
+              background: inputValue.trim() ? '#7c3aed' : 'transparent',
+              color: inputValue.trim() ? '#ffffff' : '#737373',
+              border: 'none',
+              borderRadius: '8px',
+              padding: '8px',
+              cursor: inputValue.trim() ? 'pointer' : 'default',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              transition: 'all 0.2s',
+              boxShadow: inputValue.trim() ? '0 0 15px rgba(124, 58, 237, 0.5)' : 'none'
+            }}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="22" y1="2" x2="11" y2="13"></line>
+              <path d="M22 2L15 22 11 13 2 9 22 2z"></path>
+            </svg>
+          </button>
+        </form>
+      </div>
     </div>
   );
 };

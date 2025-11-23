@@ -12,12 +12,39 @@ const formatTime = (timestamp) => {
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 };
 
-const formatPercent = (value) => {
+const normalizePercent = (value) => {
   if (value === null || value === undefined || Number.isNaN(Number(value))) {
-    return null;
+    return 0;
   }
-  const parsed = Math.max(0, Math.min(100, Number(value)));
-  return `${parsed.toFixed(0)}%`;
+  return Math.max(0, Math.min(100, Number(value)));
+};
+
+// Simple circular progress component
+const CircularProgress = ({ percentage }) => {
+  const radius = 16;
+  const circumference = 2 * Math.PI * radius;
+  const strokeDashoffset = circumference - (percentage / 100) * circumference;
+
+  return (
+    <div className="circular-progress">
+      <svg width="40" height="40" viewBox="0 0 40 40">
+        <circle
+          className="circular-progress__bg"
+          cx="20"
+          cy="20"
+          r={radius}
+        />
+        <circle
+          className="circular-progress__fill"
+          cx="20"
+          cy="20"
+          r={radius}
+          style={{ strokeDasharray: circumference, strokeDashoffset }}
+        />
+      </svg>
+      <span className="circular-progress__text">{Math.round(percentage)}%</span>
+    </div>
+  );
 };
 
 const AgentLiveFeed = () => {
@@ -70,51 +97,28 @@ const AgentLiveFeed = () => {
     }
 
     return agents.map((agent) => {
-      const { agent_id: agentId, vnc_url: vncUrl, latest_progress: latestProgress, progress_updates: progressUpdates = [] } = agent;
-      const percentLabel = latestProgress ? formatPercent(latestProgress.progress_percent) : null;
+      const { agent_id: agentId, vnc_url: vncUrl, latest_progress: latestProgress } = agent;
+      const progressPercent = normalizePercent(latestProgress?.progress_percent);
 
       return (
-        <article className="agent-card" key={agentId}>
-          <div className="agent-card__header">
-            <div>
-              <h2 className="agent-card__title">{agentId || 'Unknown Agent'}</h2>
-              <p className="agent-card__subtitle">
-                {latestProgress?.message || 'Waiting for progress update'}
-              </p>
+        <article className="agent-card agent-card--clean" key={agentId}>
+          <div className="agent-card__stream-wrapper">
+            {/* Mini VNC Stream */}
+            <VNCStreamMini 
+              agentId={agentId}
+              vncUrl={vncUrl || "https://m-linux-aqnzbmas97.containers.cloud.trycua.com/vnc.html?autoconnect=true&password=479e9bdb455b566d"}
+            />
+            
+            {/* Overlay Progress */}
+            <div className="agent-card__overlay">
+              <CircularProgress percentage={progressPercent} />
             </div>
-            <div className={`agent-card__pill ${percentLabel ? 'agent-card__pill--active' : ''}`}>
-              {percentLabel || '—'}
+
+            {/* Agent Name Overlay */}
+            <div className="agent-card__name-overlay">
+              {agentId || 'Unknown Agent'}
             </div>
           </div>
-
-          {/* Mini VNC Stream - Just the live feed, nothing else */}
-          <VNCStreamMini 
-            agentId={agentId}
-            vncUrl={vncUrl}
-          />
-
-          <div className="agent-card__meta">
-            <span>Last update: {formatTime(latestProgress?.timestamp)}</span>
-          </div>
-
-          {progressUpdates.length > 0 && (
-            <ul className="agent-card__updates">
-              {progressUpdates.slice(0, 3).map((update, index) => (
-                <li key={`${agentId}-${index}-${update.timestamp || index}`}
-                    className="agent-card__update">
-                  <div className="agent-card__update-time">{formatTime(update.timestamp)}</div>
-                  <div className="agent-card__update-body">
-                    {formatPercent(update.progress_percent) && (
-                      <span className="agent-card__update-progress">
-                        {formatPercent(update.progress_percent)}
-                      </span>
-                    )}
-                    <span>{update.message || 'Progress update received'}</span>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
         </article>
       );
     });
@@ -122,16 +126,6 @@ const AgentLiveFeed = () => {
 
   return (
     <section className="live-feed">
-      <header className="live-feed__header">
-        <div>
-          <h1>AI Village Control Center</h1>
-          <p>Monitor agent activity, live VNC streams, and progress in real time.</p>
-        </div>
-        <div className="live-feed__meta">
-          <span>Last refreshed: {generatedAt ? formatTime(generatedAt) : '—'}</span>
-        </div>
-      </header>
-
       {error && (
         <div className="live-feed__error">{error}</div>
       )}
@@ -139,7 +133,7 @@ const AgentLiveFeed = () => {
       {isLoading ? (
         <div className="live-feed__loading">Loading live feed…</div>
       ) : (
-        <div className="agent-grid">
+        <div className="agent-grid agent-grid--large">
           {agentCards || (
             <div className="agent-grid__empty">No agent data available yet.</div>
           )}
