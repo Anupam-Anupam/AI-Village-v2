@@ -10,9 +10,11 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel
+import httpx
 
 # Import storage adapters
 import sys
@@ -48,6 +50,9 @@ pg = PostgresAdapter(connection_string=os.getenv("POSTGRES_URL"))
 
 # Initialize agent manager
 agent_manager = AgentManager()
+
+# Evaluator service URL (uses Docker service name)
+EVALUATOR_URL = os.getenv("EVALUATOR_URL", "http://evaluator_agent:8001")
 
 # Pydantic models
 class TaskRequest(BaseModel):
@@ -536,6 +541,75 @@ def get_agent_responses(limit: int = 60):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get agent responses: {str(e)}")
+
+# Evaluator proxy endpoints
+@app.get("/evaluator/status")
+async def evaluator_status():
+    """Proxy to evaluator status endpoint."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{EVALUATOR_URL}/status")
+            return response.json()
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=503, detail=f"Evaluator service unavailable: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get evaluator status: {str(e)}")
+
+@app.get("/evaluator/reports")
+async def evaluator_reports():
+    """Proxy to evaluator reports endpoint."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{EVALUATOR_URL}/reports")
+            return response.json()
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=503, detail=f"Evaluator service unavailable: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get evaluator reports: {str(e)}")
+
+@app.get("/evaluator/agent/{agent_id}")
+async def evaluator_agent_reports(agent_id: str):
+    """Proxy to evaluator agent reports endpoint."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{EVALUATOR_URL}/agent/{agent_id}")
+            if response.status_code == 404:
+                raise HTTPException(status_code=404, detail="No reports for agent")
+            return response.json()
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=503, detail=f"Evaluator service unavailable: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get agent reports: {str(e)}")
+
+@app.get("/evaluator/task/{task_id}")
+async def evaluator_task_report(task_id: str):
+    """Proxy to evaluator task report endpoint."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{EVALUATOR_URL}/task/{task_id}")
+            if response.status_code == 404:
+                raise HTTPException(status_code=404, detail="Task report not found")
+            return response.json()
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=503, detail=f"Evaluator service unavailable: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get task report: {str(e)}")
+
+@app.get("/evaluator/agents/progress/graph")
+async def evaluator_progress_graph():
+    """Proxy to evaluator progress graph endpoint."""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:  # Longer timeout for graph generation
+            response = await client.get(f"{EVALUATOR_URL}/agents/progress/graph")
+            return response.json()
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=503, detail=f"Evaluator service unavailable: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate progress graph: {str(e)}")
 
 @app.get("/agents/live")
 def get_agents_live(limit_per_agent: int = 10):

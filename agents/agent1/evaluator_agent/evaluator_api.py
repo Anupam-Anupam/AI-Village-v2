@@ -57,6 +57,55 @@ def create_app() -> FastAPI:
     @app.get("/health", response_model=Health)
     def health() -> Health:
         return Health(status="ok")
+    
+    @app.get("/status")
+    def get_status():
+        """Get evaluator status and summary statistics."""
+        try:
+            all_reports = scheduler.get_all_reports()
+            
+            # Calculate summary statistics
+            total_evaluations = len(all_reports)
+            
+            # Get unique agents and tasks
+            agents = set()
+            tasks = set()
+            total_score = 0
+            score_count = 0
+            
+            for report in all_reports:
+                if report.get("agent_id"):
+                    agents.add(report["agent_id"])
+                if report.get("task_id"):
+                    tasks.add(report["task_id"])
+                if report.get("scores") and isinstance(report["scores"], dict):
+                    overall_score = report["scores"].get("overall_score", 0)
+                    if overall_score > 0:
+                        total_score += overall_score
+                        score_count += 1
+            
+            avg_score = (total_score / score_count) if score_count > 0 else 0
+            
+            return {
+                "status": "running",
+                "scheduler_active": scheduler.running,
+                "total_evaluations": total_evaluations,
+                "agents_evaluated": len(agents),
+                "tasks_evaluated": len(tasks),
+                "average_score": round(avg_score, 2),
+                "recent_evaluations": all_reports[:5] if all_reports else []
+            }
+        except Exception as e:
+            logger.error(json.dumps({
+                "event": "status_error",
+                "error": str(e)
+            }))
+            return {
+                "status": "error",
+                "error": str(e),
+                "scheduler_active": False,
+                "total_evaluations": 0
+            }
 
     @app.get("/task/{task_id}")
     def get_task(task_id: str):

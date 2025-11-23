@@ -209,9 +209,65 @@ class DataCollector:
         return snapshots
     
     def get_most_recent_task_for_agent(self, agent_id: str) -> Optional[str]:
-        """Get the most recent task ID for an agent from MongoDB logs."""
+        """
+        Get the most recent task ID (globally, not per-agent).
+        Uses PostgreSQL to get the task with the greatest ID (most recently created).
+        This ensures the evaluator always evaluates the latest task, not an old task
+        that happens to have recent log entries.
+        
+        Note: Tasks are created system-wide (not per-agent), so we get the greatest
+        task ID overall. The agent_id parameter is kept for API compatibility but
+        the evaluator evaluates the latest task that any agent is working on.
+        """
         agent_id = self._normalize_id(agent_id)
-        return self.mongo.get_most_recent_task_id(agent_id)
+        
+        # Query PostgreSQL for the task with the greatest ID
+        # This gives us the most recently created task, which is what we want to evaluate
+        try:
+            # Get recent tasks from PostgreSQL (limit to recent ones for efficiency)
+            # Tasks are ordered by created_at DESC, so the first one has the greatest ID
+            # if tasks were created in sequence
+            tasks = self.pg.get_tasks(limit=100)
+            if not tasks:
+                self.logger.warning(json.dumps({
+                    "event": "no_tasks_in_postgres",
+                    "agent_id": agent_id,
+                    "fallback": "using_mongo_logs"
+                }))
+                # Fallback to MongoDB logs if no tasks in PostgreSQL
+                return self.mongo.get_most_recent_task_id(agent_id)
+            
+            # Get the task with the greatest ID (most recent)
+            # Tasks may not be returned in ID order, so we need to check all of them
+            max_task_id = max(
+                (int(task.get("id") or 0) for task in tasks if task.get("id")),
+                default=None
+            )
+            
+            if max_task_id is not None:
+                self.logger.info(json.dumps({
+                    "event": "found_max_task_id",
+                    "agent_id": agent_id,
+                    "task_id": max_task_id
+                }))
+                return str(max_task_id)
+            
+            # Fallback to MongoDB logs if no valid task ID found
+            self.logger.warning(json.dumps({
+                "event": "no_valid_task_id_in_postgres",
+                "agent_id": agent_id,
+                "fallback": "using_mongo_logs"
+            }))
+            return self.mongo.get_most_recent_task_id(agent_id)
+        except Exception as e:
+            self.logger.warning(json.dumps({
+                "event": "get_most_recent_task_failed",
+                "agent_id": agent_id,
+                "error": str(e),
+                "fallback": "using_mongo_logs"
+            }))
+            # Fallback to MongoDB logs on error
+            return self.mongo.get_most_recent_task_id(agent_id)
     
     def collect_progress_snapshots_for_agent_task(
         self,
