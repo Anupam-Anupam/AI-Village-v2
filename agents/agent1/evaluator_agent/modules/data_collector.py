@@ -36,52 +36,52 @@ class DataCollector:
         metrics = self.mongo.compute_basic_metrics(logs)
         progress = self.pg.get_task_progress(task_id)
 
-        # Optional resource metrics extracted from logs heuristically
+        # Extract metrics from CUA logs (stderr field contains usage statistics)
         mem_usage = 0.0
         cpu_usage = 0.0
         cost_usd = 0.0
-        mem_re = re.compile(r"mem(ory)?[:=\s]+([0-9.]+)\s*mb", re.I)
-        cpu_re = re.compile(r"cpu[:=\s]+([0-9.]+)\s*%", re.I)
-        # Match common cost patterns e.g. cost: 0.0123, total_cost=$0.05, usd_cost=0.01
-        cost_re = re.compile(r"(total_)?(usd_)?cost\s*[:=\s$]+([0-9]+(?:\.[0-9]+)?)", re.I)
+        total_api_calls = 0
+        completion_tokens = 0
+        prompt_tokens = 0
+        total_tokens = 0
+        
         for l in logs:
-            msg = l.get("message") or ""
-            m1 = mem_re.search(msg)
-            if m1:
-                try:
-                    mem_usage = max(mem_usage, float(m1.group(2)))
-                except Exception:
-                    pass
-            m2 = cpu_re.search(msg)
-            if m2:
-                try:
-                    cpu_usage = max(cpu_usage, float(m2.group(1)))
-                except Exception:
-                    pass
-            mc = cost_re.search(msg)
-            if mc:
-                try:
-                    cost_usd = max(cost_usd, float(mc.group(3)))
-                except Exception:
-                    pass
-            # Also check raw dicts for structured cost fields
-            raw = l.get("raw") or {}
-            for key in ("cost_usd", "total_cost", "cost"):
-                if isinstance(raw, dict) and key in raw:
+            metadata = l.get("metadata", {})
+            
+            # Check stderr field for CUA usage statistics
+            stderr = metadata.get("stderr", "")
+            if stderr and isinstance(stderr, str):
+                # Extract response_cost (this is the main metric we want)
+                cost_match = re.search(r"response_cost:\s*\$?([0-9]+(?:\.[0-9]+)?)", stderr)
+                if cost_match:
                     try:
-                        val = float(raw[key])
-                        cost_usd = max(cost_usd, val)
+                        cost_val = float(cost_match.group(1))
+                        cost_usd += cost_val  # Sum all API costs
+                        total_api_calls += 1
                     except Exception:
                         pass
-            usage = raw.get("usage") if isinstance(raw, dict) else None
-            if isinstance(usage, dict):
-                for key in ("cost_usd", "total_cost", "cost"):
-                    if key in usage:
-                        try:
-                            val = float(usage[key])
-                            cost_usd = max(cost_usd, val)
-                        except Exception:
-                            pass
+                
+                # Extract token counts
+                comp_tokens_match = re.search(r"completion_tokens:\s*([0-9]+)", stderr)
+                if comp_tokens_match:
+                    try:
+                        completion_tokens += int(comp_tokens_match.group(1))
+                    except Exception:
+                        pass
+                
+                prompt_tokens_match = re.search(r"prompt_tokens:\s*([0-9]+)", stderr)
+                if prompt_tokens_match:
+                    try:
+                        prompt_tokens += int(prompt_tokens_match.group(1))
+                    except Exception:
+                        pass
+                
+                total_tokens_match = re.search(r"total_tokens:\s*([0-9]+)", stderr)
+                if total_tokens_match:
+                    try:
+                        total_tokens += int(total_tokens_match.group(1))
+                    except Exception:
+                        pass
 
         data = {
             "agent_id": agent_id,
@@ -92,6 +92,10 @@ class DataCollector:
                 "memory_usage_mb": mem_usage,
                 "cpu_usage_percent": cpu_usage,
                 "cost_usd": cost_usd,
+                "completion_tokens": completion_tokens,
+                "prompt_tokens": prompt_tokens,
+                "total_tokens": total_tokens,
+                "total_api_calls": total_api_calls,
             },
             "progress": progress,
             "collected_at": self._now().isoformat(),
@@ -202,50 +206,52 @@ class DataCollector:
             logs = self.mongo.fetch_task_logs_until(agent_id, task_id, cutoff)
             metrics = self.mongo.compute_basic_metrics(logs)
 
-            # Reuse resource extraction across logs
+            # Extract metrics from CUA logs (stderr field contains usage statistics)
             mem_usage = 0.0
             cpu_usage = 0.0
             cost_usd = 0.0
-            mem_re = re.compile(r"mem(ory)?[:=\s]+([0-9.]+)\s*mb", re.I)
-            cpu_re = re.compile(r"cpu[:=\s]+([0-9.]+)\s*%", re.I)
-            cost_re = re.compile(r"(total_)?(usd_)?cost\s*[:=\s$]+([0-9]+(?:\.[0-9]+)?)", re.I)
+            total_api_calls = 0
+            completion_tokens = 0
+            prompt_tokens = 0
+            total_tokens = 0
+            
             for l in logs:
-                msg = l.get("message") or ""
-                m1 = mem_re.search(msg)
-                if m1:
-                    try:
-                        mem_usage = max(mem_usage, float(m1.group(2)))
-                    except Exception:
-                        pass
-                m2 = cpu_re.search(msg)
-                if m2:
-                    try:
-                        cpu_usage = max(cpu_usage, float(m2.group(1)))
-                    except Exception:
-                        pass
-                mc = cost_re.search(msg)
-                if mc:
-                    try:
-                        cost_usd = max(cost_usd, float(mc.group(3)))
-                    except Exception:
-                        pass
-                raw = l.get("raw") or {}
-                for key in ("cost_usd", "total_cost", "cost"):
-                    if isinstance(raw, dict) and key in raw:
+                metadata = l.get("metadata", {})
+                
+                # Check stderr field for CUA usage statistics
+                stderr = metadata.get("stderr", "")
+                if stderr and isinstance(stderr, str):
+                    # Extract response_cost (this is the main metric we want)
+                    cost_match = re.search(r"response_cost:\s*\$?([0-9]+(?:\.[0-9]+)?)", stderr)
+                    if cost_match:
                         try:
-                            val = float(raw[key])
-                            cost_usd = max(cost_usd, val)
+                            cost_val = float(cost_match.group(1))
+                            cost_usd += cost_val  # Sum all API costs
+                            total_api_calls += 1
                         except Exception:
                             pass
-                usage = raw.get("usage") if isinstance(raw, dict) else None
-                if isinstance(usage, dict):
-                    for key in ("cost_usd", "total_cost", "cost"):
-                        if key in usage:
-                            try:
-                                val = float(usage[key])
-                                cost_usd = max(cost_usd, val)
-                            except Exception:
-                                pass
+                    
+                    # Extract token counts
+                    comp_tokens_match = re.search(r"completion_tokens:\s*([0-9]+)", stderr)
+                    if comp_tokens_match:
+                        try:
+                            completion_tokens += int(comp_tokens_match.group(1))
+                        except Exception:
+                            pass
+                    
+                    prompt_tokens_match = re.search(r"prompt_tokens:\s*([0-9]+)", stderr)
+                    if prompt_tokens_match:
+                        try:
+                            prompt_tokens += int(prompt_tokens_match.group(1))
+                        except Exception:
+                            pass
+                    
+                    total_tokens_match = re.search(r"total_tokens:\s*([0-9]+)", stderr)
+                    if total_tokens_match:
+                        try:
+                            total_tokens += int(total_tokens_match.group(1))
+                        except Exception:
+                            pass
 
             data = {
                 "agent_id": agent_id,
@@ -256,6 +262,10 @@ class DataCollector:
                     "memory_usage_mb": mem_usage,
                     "cpu_usage_percent": cpu_usage,
                     "cost_usd": cost_usd,
+                    "completion_tokens": completion_tokens,
+                    "prompt_tokens": prompt_tokens,
+                    "total_tokens": total_tokens,
+                    "total_api_calls": total_api_calls,
                 },
                 # include progress up to this point
                 "progress": progress[: idx + 1],
@@ -451,51 +461,52 @@ class DataCollector:
                     # No checkpoints - use pure analysis
                     progress_percent = inferred_progress * 100
                 
-                # Extract resource metrics
+                # Extract metrics from CUA logs (stderr field contains usage statistics)
                 mem_usage = 0.0
                 cpu_usage = 0.0
                 cost_usd = 0.0
-                mem_re = re.compile(r"mem(ory)?[:=\s]+([0-9.]+)\s*mb", re.I)
-                cpu_re = re.compile(r"cpu[:=\s]+([0-9.]+)\s*%", re.I)
-                cost_re = re.compile(r"(total_)?(usd_)?cost\s*[:=\s$]+([0-9]+(?:\.[0-9]+)?)", re.I)
+                total_api_calls = 0
+                completion_tokens = 0
+                prompt_tokens = 0
+                total_tokens = 0
                 
                 for l in cumulative_logs:
-                    msg = l.get("message") or ""
-                    m1 = mem_re.search(msg)
-                    if m1:
-                        try:
-                            mem_usage = max(mem_usage, float(m1.group(2)))
-                        except Exception:
-                            pass
-                    m2 = cpu_re.search(msg)
-                    if m2:
-                        try:
-                            cpu_usage = max(cpu_usage, float(m2.group(1)))
-                        except Exception:
-                            pass
-                    mc = cost_re.search(msg)
-                    if mc:
-                        try:
-                            cost_usd = max(cost_usd, float(mc.group(3)))
-                        except Exception:
-                            pass
-                    raw = l.get("raw") or {}
-                    for key in ("cost_usd", "total_cost", "cost"):
-                        if isinstance(raw, dict) and key in raw:
+                    metadata = l.get("metadata", {})
+                    
+                    # Check stderr field for CUA usage statistics
+                    stderr = metadata.get("stderr", "")
+                    if stderr and isinstance(stderr, str):
+                        # Extract response_cost (this is the main metric we want)
+                        cost_match = re.search(r"response_cost:\s*\$?([0-9]+(?:\.[0-9]+)?)", stderr)
+                        if cost_match:
                             try:
-                                val = float(raw[key])
-                                cost_usd = max(cost_usd, val)
+                                cost_val = float(cost_match.group(1))
+                                cost_usd += cost_val  # Sum all API costs
+                                total_api_calls += 1
                             except Exception:
                                 pass
-                    usage = raw.get("usage") if isinstance(raw, dict) else None
-                    if isinstance(usage, dict):
-                        for key in ("cost_usd", "total_cost", "cost"):
-                            if key in usage:
-                                try:
-                                    val = float(usage[key])
-                                    cost_usd = max(cost_usd, val)
-                                except Exception:
-                                    pass
+                        
+                        # Extract token counts
+                        comp_tokens_match = re.search(r"completion_tokens:\s*([0-9]+)", stderr)
+                        if comp_tokens_match:
+                            try:
+                                completion_tokens += int(comp_tokens_match.group(1))
+                            except Exception:
+                                pass
+                        
+                        prompt_tokens_match = re.search(r"prompt_tokens:\s*([0-9]+)", stderr)
+                        if prompt_tokens_match:
+                            try:
+                                prompt_tokens += int(prompt_tokens_match.group(1))
+                            except Exception:
+                                pass
+                        
+                        total_tokens_match = re.search(r"total_tokens:\s*([0-9]+)", stderr)
+                        if total_tokens_match:
+                            try:
+                                total_tokens += int(total_tokens_match.group(1))
+                            except Exception:
+                                pass
                 
                 timestamp = log.get("created_at") or log.get("timestamp")
                 if isinstance(timestamp, str):
@@ -515,6 +526,10 @@ class DataCollector:
                         "memory_usage_mb": mem_usage,
                         "cpu_usage_percent": cpu_usage,
                         "cost_usd": cost_usd,
+                        "completion_tokens": completion_tokens,
+                        "prompt_tokens": prompt_tokens,
+                        "total_tokens": total_tokens,
+                        "total_api_calls": total_api_calls,
                     },
                     "progress_percent": progress_percent,
                     "collected_at": timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp),
@@ -576,51 +591,52 @@ class DataCollector:
             # Compute metrics from logs
             metrics = self.mongo.compute_basic_metrics(logs)
             
-            # Extract resource metrics from logs
+            # Extract metrics from CUA logs (stderr field contains usage statistics)
             mem_usage = 0.0
             cpu_usage = 0.0
             cost_usd = 0.0
-            mem_re = re.compile(r"mem(ory)?[:=\s]+([0-9.]+)\s*mb", re.I)
-            cpu_re = re.compile(r"cpu[:=\s]+([0-9.]+)\s*%", re.I)
-            cost_re = re.compile(r"(total_)?(usd_)?cost\s*[:=\s$]+([0-9]+(?:\.[0-9]+)?)", re.I)
+            total_api_calls = 0
+            completion_tokens = 0
+            prompt_tokens = 0
+            total_tokens = 0
             
             for l in logs:
-                msg = l.get("message") or ""
-                m1 = mem_re.search(msg)
-                if m1:
-                    try:
-                        mem_usage = max(mem_usage, float(m1.group(2)))
-                    except Exception:
-                        pass
-                m2 = cpu_re.search(msg)
-                if m2:
-                    try:
-                        cpu_usage = max(cpu_usage, float(m2.group(1)))
-                    except Exception:
-                        pass
-                mc = cost_re.search(msg)
-                if mc:
-                    try:
-                        cost_usd = max(cost_usd, float(mc.group(3)))
-                    except Exception:
-                        pass
-                raw = l.get("raw") or {}
-                for key in ("cost_usd", "total_cost", "cost"):
-                    if isinstance(raw, dict) and key in raw:
+                metadata = l.get("metadata", {})
+                
+                # Check stderr field for CUA usage statistics
+                stderr = metadata.get("stderr", "")
+                if stderr and isinstance(stderr, str):
+                    # Extract response_cost (this is the main metric we want)
+                    cost_match = re.search(r"response_cost:\s*\$?([0-9]+(?:\.[0-9]+)?)", stderr)
+                    if cost_match:
                         try:
-                            val = float(raw[key])
-                            cost_usd = max(cost_usd, val)
+                            cost_val = float(cost_match.group(1))
+                            cost_usd += cost_val  # Sum all API costs
+                            total_api_calls += 1
                         except Exception:
                             pass
-                usage = raw.get("usage") if isinstance(raw, dict) else None
-                if isinstance(usage, dict):
-                    for key in ("cost_usd", "total_cost", "cost"):
-                        if key in usage:
-                            try:
-                                val = float(usage[key])
-                                cost_usd = max(cost_usd, val)
-                            except Exception:
-                                pass
+                    
+                    # Extract token counts
+                    comp_tokens_match = re.search(r"completion_tokens:\s*([0-9]+)", stderr)
+                    if comp_tokens_match:
+                        try:
+                            completion_tokens += int(comp_tokens_match.group(1))
+                        except Exception:
+                            pass
+                    
+                    prompt_tokens_match = re.search(r"prompt_tokens:\s*([0-9]+)", stderr)
+                    if prompt_tokens_match:
+                        try:
+                            prompt_tokens += int(prompt_tokens_match.group(1))
+                        except Exception:
+                            pass
+                    
+                    total_tokens_match = re.search(r"total_tokens:\s*([0-9]+)", stderr)
+                    if total_tokens_match:
+                        try:
+                            total_tokens += int(total_tokens_match.group(1))
+                        except Exception:
+                            pass
             
             # Use actual progress_percent from PostgreSQL
             progress_percent = progress_row.get("progress_percent", 0.0)
@@ -687,6 +703,10 @@ class DataCollector:
                     "memory_usage_mb": mem_usage,
                     "cpu_usage_percent": cpu_usage,
                     "cost_usd": cost_usd,
+                    "completion_tokens": completion_tokens,
+                    "prompt_tokens": prompt_tokens,
+                    "total_tokens": total_tokens,
+                    "total_api_calls": total_api_calls,
                 },
                 "progress_percent": progress_percent,  # Use actual PostgreSQL value
                 "collected_at": timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp),

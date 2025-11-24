@@ -92,7 +92,11 @@ def create_app() -> FastAPI:
                         agent_scores[agent_id] = {
                             "score": round(final_score, 2),
                             "task_id": report.get("task_id"),
-                            "evaluated_at": report.get("evaluated_at")
+                            "evaluated_at": report.get("evaluated_at"),
+                            "breakdown": report.get("scores", {}),
+                            "metrics": report.get("metrics", {}),
+                            "penalties": report.get("penalties", {}),
+                            "summary": report.get("evaluation_summary", "")
                         }
                 
                 if report.get("task_id"):

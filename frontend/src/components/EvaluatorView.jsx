@@ -1,11 +1,135 @@
 import { useState, useEffect } from 'react';
 import { API_BASE } from '../config';
 
+// Reusable Summary Card Component
+const SummaryCard = ({ title, value, trend, icon }) => (
+  <div className="summary-card">
+    <div className="summary-card__icon">{icon}</div>
+    <div className="summary-card__content">
+      <span className="summary-card__title">{title}</span>
+      <span className="summary-card__value">{value}</span>
+    </div>
+    {trend && <span className="summary-card__trend">{trend}</span>}
+  </div>
+);
+
+const ScoreBreakdown = ({ scores, metrics, penalties, summary, isCompact = false }) => {
+  const metricsList = [
+    { key: 'correctness', label: 'Correctness' },
+    { key: 'efficiency', label: 'Efficiency' },
+    { key: 'quality', label: 'Quality' },
+    { key: 'stability', label: 'Stability' },
+    { key: 'autonomy', label: 'Autonomy' },
+    { key: 'resource_efficiency', label: 'Resource Efficiency' },
+  ];
+
+  // If compact, use fewer columns
+  const gridStyle = isCompact 
+    ? { gridTemplateColumns: '1fr', gap: '12px' } 
+    : { gridTemplateColumns: '1fr 1fr', gap: '24px' };
+
+  return (
+    <div className="evaluation-details" style={isCompact ? { padding: '16px 0 0 0', background: 'transparent', borderTop: 'none' } : {}}>
+      <h4 className="details-header">Score Breakdown</h4>
+      <div className="details-grid" style={gridStyle}>
+        {metricsList.map(({ key, label }) => {
+          const val = scores?.[key] || 0;
+          // Assume 0-1 range
+          const percent = (val * 100).toFixed(1);
+          return (
+            <div className="detail-metric" key={key}>
+              <span className="label">{label}</span>
+              <div className="bar-container">
+                <div className="bar" style={{ width: `${Math.min(val * 100, 100)}%` }} />
+              </div>
+              <span className="value">{percent}%</span>
+            </div>
+          );
+        })}
+      </div>
+
+      {metrics && (
+         <div className="metrics-section" style={{ marginTop: '1rem', padding: '1rem', background: 'rgba(255,255,255,0.05)', borderRadius: '6px' }}>
+             <h4 className="details-header" style={{ marginBottom: '0.5rem' }}>Raw Metrics</h4>
+             <div style={{ display: 'grid', gridTemplateColumns: isCompact ? '1fr' : '1fr 1fr', gap: '0.5rem', fontSize: '0.85rem', color: '#fff' }}>
+                <div>Time: <span style={{ color: '#fff' }}>{metrics.completion_time_s?.toFixed(1)}s</span></div>
+                <div>Errors: <span style={{ color: '#fff' }}>{metrics.error_count}</span></div>
+                <div>API Calls: <span style={{ color: '#fff' }}>{metrics.total_api_calls}</span></div>
+                <div>Cost: <span style={{ color: '#fff' }}>${metrics.cost_usd?.toFixed(4)}</span></div>
+                <div>Completion Tokens: <span style={{ color: '#fff' }}>{metrics.completion_tokens?.toLocaleString()}</span></div>
+                <div>Prompt Tokens: <span style={{ color: '#fff' }}>{metrics.prompt_tokens?.toLocaleString()}</span></div>
+                <div>Total Tokens: <span style={{ color: '#fff' }}>{metrics.total_tokens?.toLocaleString()}</span></div>
+             </div>
+         </div>
+      )}
+      
+      {penalties && Object.keys(penalties).length > 0 && Object.values(penalties).some(v => v > 0) && (
+        <div className="penalties-section" style={{ marginTop: '1rem' }}>
+            <h4 className="details-header" style={{ color: '#ef4444' }}>Penalties Applied</h4>
+            <ul style={{ fontSize: '0.85rem', color: '#ef4444', paddingLeft: '1.2rem', margin: 0 }}>
+                {Object.entries(penalties).map(([k, v]) => (
+                    v > 0 && <li key={k}>{k.replace(/_/g, ' ')}: -{(v * 100).toFixed(1)}%</li>
+                ))}
+            </ul>
+        </div>
+      )}
+
+      <div className="feedback-section" style={{ marginTop: '1rem' }}>
+         <div className="label">Summary</div>
+         <p>{summary || 'No specific feedback provided.'}</p>
+      </div>
+    </div>
+  );
+};
+
+const EvaluationItem = ({ evaluation }) => {
+  const [expanded, setExpanded] = useState(false);
+  
+  // Handle both unified structure and potentially flat structure if API varies
+  const score = evaluation.scores?.overall_score || evaluation.scores?.final_score || 0;
+  // Convert to percentage if needed (heuristically)
+  const displayScore = score <= 1 ? score * 100 : score;
+  
+  const scoreColor = displayScore >= 70 ? '#22c55e' : displayScore >= 40 ? '#f59e0b' : '#ef4444';
+
+  return (
+    <div className="evaluation-wrapper">
+      <div className="evaluation-item" onClick={() => setExpanded(!expanded)}>
+        <div className="evaluation-item__main">
+          <div className="evaluation-id">Task #{evaluation.task_id}</div>
+          <div className="evaluation-agent">{evaluation.agent_id}</div>
+          <div className="evaluation-date">
+            {evaluation.evaluated_at && new Date(evaluation.evaluated_at).toLocaleString()}
+          </div>
+        </div>
+        <div className="evaluation-item__score">
+          <div className="score-badge" style={{ color: scoreColor, borderColor: scoreColor }}>
+            {displayScore.toFixed(0)}%
+          </div>
+          <div className={`chevron ${expanded ? 'expanded' : ''}`}>▼</div>
+        </div>
+      </div>
+      
+      {expanded && (
+        <ScoreBreakdown 
+            scores={evaluation.scores}
+            metrics={evaluation.metrics}
+            penalties={evaluation.penalties}
+            summary={evaluation.evaluation_summary}
+        />
+      )}
+    </div>
+  );
+};
+
 const EvaluatorView = () => {
   const [evaluatorData, setEvaluatorData] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [progressGraph, setProgressGraph] = useState(null);
   const [graphLoading, setGraphLoading] = useState(false);
+  
+  // Track expanded state for agent sidebar items
+  const [expandedAgents, setExpandedAgents] = useState({});
 
   useEffect(() => {
     const fetchEvaluatorData = async () => {
@@ -16,7 +140,7 @@ const EvaluatorView = () => {
           setEvaluatorData(data);
         }
       } catch (err) {
-        // Silently fail - evaluator endpoint not yet implemented
+        // Silently fail
       } finally {
         setIsLoading(false);
       }
@@ -25,28 +149,15 @@ const EvaluatorView = () => {
     const fetchProgressGraph = async () => {
       try {
         setGraphLoading(true);
-        console.log('[EvaluatorView] Fetching progress graph...');
         const response = await fetch(`${API_BASE}/evaluator/agents/progress/graph`);
-        console.log('[EvaluatorView] Graph response status:', response.status);
         if (response.ok) {
           const data = await response.json();
-          console.log('[EvaluatorView] Graph data received:', {
-            status: data.status,
-            hasImage: !!data.image_data_url,
-            agents: data.agents,
-            message: data.message
-          });
           if (data.image_data_url) {
             setProgressGraph(data);
-            console.log('[EvaluatorView] Graph state updated successfully');
-          } else {
-            console.warn('[EvaluatorView] No image_data_url in response');
           }
-        } else {
-          console.error('[EvaluatorView] Graph fetch failed with status:', response.status);
         }
       } catch (err) {
-        console.error('[EvaluatorView] Error fetching graph:', err);
+        console.error('Error fetching graph:', err);
       } finally {
         setGraphLoading(false);
       }
@@ -55,14 +166,21 @@ const EvaluatorView = () => {
     fetchEvaluatorData();
     fetchProgressGraph();
     
-    const statusInterval = setInterval(fetchEvaluatorData, 10000); // Refresh status every 10s
-    const graphInterval = setInterval(fetchProgressGraph, 30000); // Refresh graph every 30s
+    const statusInterval = setInterval(fetchEvaluatorData, 10000);
+    const graphInterval = setInterval(fetchProgressGraph, 30000);
 
     return () => {
       clearInterval(statusInterval);
       clearInterval(graphInterval);
     };
   }, []);
+
+  const toggleAgent = (agentId) => {
+      setExpandedAgents(prev => ({
+          ...prev,
+          [agentId]: !prev[agentId]
+      }));
+  };
 
   const status = evaluatorData?.status || 'loading';
   const stats = {
@@ -77,182 +195,138 @@ const EvaluatorView = () => {
   return (
     <div className="evaluator-view">
       <div className="evaluator-header">
-        <h1>Evaluator Dashboard</h1>
-        <p>Monitor agent performance and evaluation metrics</p>
-        {status === 'running' && (
-          <span style={{ 
-            display: 'inline-block', 
-            marginLeft: '10px',
-            padding: '4px 12px',
-            background: 'rgba(34, 197, 94, 0.1)',
-            color: '#22c55e',
-            borderRadius: '12px',
-            fontSize: '0.875rem',
-            fontWeight: '500'
-          }}>
-            ● Active
-          </span>
-        )}
+        <div>
+          <h1>Evaluator Dashboard</h1>
+          <p>Real-time performance monitoring</p>
+        </div>
+        <div className={`system-status ${status === 'running' ? 'active' : ''}`}>
+            <span className="status-dot"></span>
+            {status === 'running' ? 'System Active' : 'System Idle'}
+        </div>
       </div>
 
-      <div className="evaluator-grid">
-        {/* Placeholder cards for evaluator metrics */}
-        <div className="evaluator-card">
-          <div className="evaluator-card__header">
-            <h3>📊 Evaluation Stats</h3>
-          </div>
-          <div className="evaluator-card__body">
-            <div className="metric-row">
-              <span className="metric-label">Total Evaluations</span>
-              <span className="metric-value">{stats.totalEvaluations}</span>
-            </div>
-            <div className="metric-row">
-              <span className="metric-label">Agents Evaluated</span>
-              <span className="metric-value">{stats.agentsEvaluated}</span>
-            </div>
-            <div className="metric-row">
-              <span className="metric-label">Tasks Evaluated</span>
-              <span className="metric-value">{stats.tasksEvaluated}</span>
-            </div>
-            <div className="metric-row">
-              <span className="metric-label">Average Score</span>
-              <span className="metric-value">{stats.averageScore.toFixed(1)}%</span>
-            </div>
-          </div>
-        </div>
+      <div className="summary-grid">
+        <SummaryCard 
+          title="Total Evaluations" 
+          value={stats.totalEvaluations} 
+          icon="📊"
+        />
+        <SummaryCard 
+          title="Agents Monitored" 
+          value={stats.agentsEvaluated} 
+          icon="🤖"
+        />
+        <SummaryCard 
+          title="Tasks Processed" 
+          value={stats.tasksEvaluated} 
+          icon="📝"
+        />
+        <SummaryCard 
+          title="Avg. Success Rate" 
+          value={`${stats.averageScore.toFixed(1)}%`} 
+          icon="🎯"
+          trend={stats.averageScore > 80 ? "High" : "Normal"}
+        />
+      </div>
 
-        <div className="evaluator-card">
-          <div className="evaluator-card__header">
-            <h3>🎯 Agent Scores</h3>
-          </div>
-          <div className="evaluator-card__body">
-            <div className="agent-score">
-              <span className="agent-name">🤖 Agent 1</span>
-              <div className="score-bar">
-                <div className="score-fill" style={{ 
-                  width: `${agentScores.agent1?.score || 0}%`,
-                  backgroundColor: (agentScores.agent1?.score || 0) >= 70 ? '#22c55e' : '#f59e0b'
-                }}></div>
-              </div>
-              <span className="score-value">
-                {agentScores.agent1 ? `${agentScores.agent1.score.toFixed(1)}%` : '—'}
-              </span>
-            </div>
-            <div className="agent-score">
-              <span className="agent-name">🦾 Agent 2</span>
-              <div className="score-bar">
-                <div className="score-fill" style={{ 
-                  width: `${agentScores.agent2?.score || 0}%`,
-                  backgroundColor: (agentScores.agent2?.score || 0) >= 70 ? '#22c55e' : '#f59e0b'
-                }}></div>
-              </div>
-              <span className="score-value">
-                {agentScores.agent2 ? `${agentScores.agent2.score.toFixed(1)}%` : '—'}
-              </span>
-            </div>
-            <div className="agent-score">
-              <span className="agent-name">🧠 Agent 3</span>
-              <div className="score-bar">
-                <div className="score-fill" style={{ 
-                  width: `${agentScores.agent3?.score || 0}%`,
-                  backgroundColor: (agentScores.agent3?.score || 0) >= 70 ? '#22c55e' : '#f59e0b'
-                }}></div>
-              </div>
-              <span className="score-value">
-                {agentScores.agent3 ? `${agentScores.agent3.score.toFixed(1)}%` : '—'}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <div className="evaluator-card evaluator-card--wide">
-          <div className="evaluator-card__header">
-            <h3>📊 Agent Progress Graph</h3>
-          </div>
-          <div className="evaluator-card__body">
-            {graphLoading ? (
-              <div style={{ 
-                color: 'var(--muted-text)', 
-                textAlign: 'center',
-                padding: '40px 20px'
-              }}>
-                Loading progress graph...
-              </div>
-            ) : progressGraph && progressGraph.image_data_url ? (
-              <div style={{ padding: '10px' }}>
-                <img 
-                  src={progressGraph.image_data_url} 
-                  alt="Agent Progress Graph" 
-                  style={{ 
-                    width: '100%', 
-                    height: 'auto',
-                    borderRadius: '8px'
-                  }} 
-                />
-                <div style={{ 
-                  marginTop: '10px', 
-                  fontSize: '0.875rem', 
-                  color: 'var(--muted-text)',
-                  textAlign: 'center'
-                }}>
-                  {progressGraph.message || 'Real-time agent progress tracking'}
+      <div className="dashboard-grid">
+        <div className="dashboard-main">
+            <div className="evaluator-card">
+                <div className="card-header">
+                    <h3>Agent Progress Graph</h3>
                 </div>
-              </div>
-            ) : (
-              <div style={{ 
-                color: 'var(--muted-text)', 
-                textAlign: 'center',
-                padding: '40px 20px'
-              }}>
-                No progress data available. Graph will appear once agents start working on tasks.
-              </div>
-            )}
-          </div>
+                <div className="card-body graph-body">
+                    {graphLoading && !progressGraph ? (
+                    <div className="placeholder-state">Loading graph...</div>
+                    ) : progressGraph?.image_data_url ? (
+                    <div className="graph-container">
+                        <img 
+                        src={progressGraph.image_data_url} 
+                        alt="Agent Progress Graph" 
+                        />
+                        <div className="graph-caption">
+                        {progressGraph.message}
+                        </div>
+                    </div>
+                    ) : (
+                    <div className="placeholder-state">
+                        No graph data available yet.
+                    </div>
+                    )}
+                </div>
+            </div>
+
+            <div className="evaluator-card">
+                <div className="card-header">
+                    <h3>Recent Evaluations</h3>
+                </div>
+                <div className="card-body no-padding">
+                    {recentEvaluations.length === 0 ? (
+                    <div className="placeholder-state">
+                        No evaluations recorded yet.
+                    </div>
+                    ) : (
+                    <div className="evaluations-list">
+                        {recentEvaluations.map((evaluation, idx) => (
+                        <EvaluationItem key={idx} evaluation={evaluation} />
+                        ))}
+                    </div>
+                    )}
+                </div>
+            </div>
         </div>
 
-        <div className="evaluator-card evaluator-card--wide">
-          <div className="evaluator-card__header">
-            <h3>📈 Recent Evaluations</h3>
-          </div>
-          <div className="evaluator-card__body">
-            {recentEvaluations.length === 0 ? (
-              <div style={{ 
-                color: 'var(--muted-text)', 
-                textAlign: 'center',
-                padding: '40px 20px'
-              }}>
-                No evaluation data available yet. Evaluations will appear here once agents complete tasks.
-              </div>
-            ) : (
-              <div className="evaluations-list">
-                {recentEvaluations.map((evaluation, idx) => (
-                  <div key={idx} className="evaluation-item" style={{
-                    padding: '12px',
-                    borderBottom: idx < recentEvaluations.length - 1 ? '1px solid rgba(255,255,255,0.1)' : 'none',
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center'
-                  }}>
-                    <div>
-                      <div style={{ fontWeight: '500' }}>
-                        Task #{evaluation.task_id} - {evaluation.agent_id}
-                      </div>
-                      <div style={{ fontSize: '0.875rem', color: 'var(--muted-text)', marginTop: '4px' }}>
-                        {evaluation.evaluated_at && new Date(evaluation.evaluated_at).toLocaleString()}
-                      </div>
-                    </div>
-                    <div style={{ 
-                      fontSize: '1.25rem', 
-                      fontWeight: 'bold',
-                      color: (evaluation.scores?.overall_score || 0) >= 70 ? '#22c55e' : '#f59e0b'
-                    }}>
-                      {evaluation.scores?.overall_score || 0}%
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+        <div className="dashboard-sidebar">
+            <div className="evaluator-card">
+                <div className="card-header">
+                    <h3>Performance by Agent</h3>
+                </div>
+                <div className="card-body">
+                    {['agent1', 'agent2', 'agent3'].map(agentId => {
+                        const data = agentScores[agentId];
+                        const score = data?.score || 0;
+                        const color = score >= 70 ? '#22c55e' : score >= 40 ? '#f59e0b' : '#ef4444';
+                        const isExpanded = expandedAgents[agentId];
+                        
+                        return (
+                            <div 
+                                className={`agent-performance-item ${data ? 'clickable' : ''}`} 
+                                key={agentId}
+                                onClick={() => data && toggleAgent(agentId)}
+                                style={{ cursor: data ? 'pointer' : 'default' }}
+                            >
+                                <div className="perf-header">
+                                    <span className="perf-name">{agentId}</span>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                        <span className="perf-score" style={{ color }}>{score.toFixed(1)}%</span>
+                                        {data && <span className={`chevron ${isExpanded ? 'expanded' : ''}`}>▼</span>}
+                                    </div>
+                                </div>
+                                <div className="perf-bar-bg">
+                                    <div className="perf-bar-fill" style={{ 
+                                        width: `${score}%`,
+                                        backgroundColor: color
+                                    }}></div>
+                                </div>
+                                
+                                <div className={`agent-details-dropdown ${isExpanded ? 'expanded' : ''}`}>
+                                    <div className="agent-details-content">
+                                         {data && (
+                                             <ScoreBreakdown 
+                                                scores={data.breakdown}
+                                                metrics={data.metrics}
+                                                penalties={data.penalties}
+                                                summary={data.summary}
+                                                isCompact={true}
+                                             />
+                                         )}
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
         </div>
       </div>
     </div>
@@ -260,4 +334,3 @@ const EvaluatorView = () => {
 };
 
 export default EvaluatorView;
-
