@@ -1,10 +1,25 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { API_BASE, REFRESH_INTERVALS } from '../config';
 import { ensureDate, normalizePercent, formatPercentLabel, buildAgentMessage, formatTime } from '../utils/chatUtils';
+
+const AVAILABLE_AGENTS = ['agent1', 'agent2', 'agent3'];
+
+const detectTaggedAgents = (text = '') => {
+  if (!text) return [];
+  const normalized = text.toLowerCase();
+  if (normalized.includes('@all')) {
+    return AVAILABLE_AGENTS;
+  }
+  const detected = AVAILABLE_AGENTS.filter((agentId) =>
+    normalized.includes(`@${agentId.toLowerCase()}`)
+  );
+  return detected;
+};
 
 const ChatTerminal = () => {
   const [messages, setMessages] = useState([]);
   const [inputValue, setInputValue] = useState('');
+  const [caretPosition, setCaretPosition] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState(null);
@@ -15,8 +30,13 @@ const ChatTerminal = () => {
   const [passwordError, setPasswordError] = useState('');
   const messagesEndRef = useRef(null);
   const messagesContainerRef = useRef(null);
+  const inputRef = useRef(null);
   const abortRef = useRef(false);
   const prevMessageCountRef = useRef(0);
+  const [agentsStatus, setAgentsStatus] = useState({});
+  const [mentionQuery, setMentionQuery] = useState('');
+  const [isMentionMenuVisible, setMentionMenuVisible] = useState(false);
+  const [mentionCoords, setMentionCoords] = useState({ left: 0, bottom: 0 });
 
   const upsertMessages = useCallback((incoming = [], { restampNew = false } = {}) => {
     if (!incoming.length) {
@@ -57,6 +77,91 @@ const ChatTerminal = () => {
     });
   }, []);
 
+  const taggedAgents = useMemo(() => detectTaggedAgents(inputValue), [inputValue]);
+
+  const fetchAgentsStatus = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/agents/status`);
+      const data = await response.json();
+      if (response.ok && data) {
+        setAgentsStatus(data);
+      }
+    } catch (err) {
+      // ignore, UI just won't show status
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchAgentsStatus();
+    const intervalId = setInterval(fetchAgentsStatus, REFRESH_INTERVALS.liveFeed);
+    return () => clearInterval(intervalId);
+  }, [fetchAgentsStatus]);
+
+  const updateMentionState = useCallback((value, cursorPos) => {
+    if (cursorPos == null) {
+      cursorPos = value.length;
+    }
+    const textBeforeCursor = value.slice(0, cursorPos);
+    const mentionMatch = textBeforeCursor.match(/@([a-z0-9_-]*)$/i);
+    if (mentionMatch) {
+      setMentionQuery(mentionMatch[1].toLowerCase());
+      setMentionMenuVisible(true);
+      // position menu near input (simple approach: align to input box)
+      if (inputRef.current) {
+        const rect = inputRef.current.getBoundingClientRect();
+        setMentionCoords({
+          left: rect.left,
+          bottom: rect.height + 8,
+        });
+      }
+    } else {
+      setMentionMenuVisible(false);
+      setMentionQuery('');
+    }
+  }, []);
+
+  const handleInputChange = useCallback((e) => {
+    const { value, selectionStart } = e.target;
+    setInputValue(value);
+    setCaretPosition(selectionStart || value.length);
+    updateMentionState(value, selectionStart || value.length);
+  }, [updateMentionState]);
+
+  const handleInputSelect = useCallback((e) => {
+    const { selectionStart } = e.target;
+    setCaretPosition(selectionStart || 0);
+    updateMentionState(e.target.value, selectionStart || 0);
+  }, [updateMentionState]);
+
+  const mentionOptions = useMemo(() => {
+    const query = mentionQuery.trim();
+    return AVAILABLE_AGENTS.filter((agentId) =>
+      !query || agentId.toLowerCase().includes(query)
+    );
+  }, [mentionQuery]);
+
+  const insertMention = useCallback((agentId) => {
+    if (!inputRef.current) return;
+    const currentValue = inputRef.current.value;
+    const cursor = caretPosition;
+    const textBeforeCursor = currentValue.slice(0, cursor);
+    const mentionMatch = textBeforeCursor.match(/@([a-z0-9_-]*)$/i);
+    let startIndex = cursor;
+    if (mentionMatch) {
+      startIndex = cursor - mentionMatch[1].length - 1;
+    }
+    const before = currentValue.slice(0, startIndex);
+    const after = currentValue.slice(cursor);
+    const newValue = `${before}@${agentId} ${after}`.replace(/\s{2,}/g, ' ');
+    setInputValue(newValue);
+    setMentionMenuVisible(false);
+    const newCursor = before.length + agentId.length + 2;
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.setSelectionRange(newCursor, newCursor);
+      setCaretPosition(newCursor);
+    });
+  }, [caretPosition]);
   const handlePasswordSubmit = (e) => {
     e.preventDefault();
     if (passwordInput === 'jubilee') {
@@ -247,6 +352,24 @@ const ChatTerminal = () => {
       setIsLoading(false);
     }
   };
+
+  const handleAgentToggle = useCallback((agentId) => {
+    setInputValue((prev) => {
+      const regex = new RegExp(`@${agentId}\\b`, 'gi');
+      const hasTag = regex.test(prev);
+      if (hasTag) {
+        return prev.replace(regex, '').replace(/\s{2,}/g, ' ').trimStart();
+      }
+      const spacer = prev && !prev.endsWith(' ') ? ' ' : '';
+      return `${prev}${spacer}@${agentId} `.replace(/\s{2,}/g, ' ');
+    });
+  }, []);
+
+  const handleClearTags = useCallback(() => {
+    setInputValue((prev) =>
+      prev.replace(/@agent[1-3]\b/gi, '').replace(/\s{2,}/g, ' ').trimStart()
+    );
+  }, []);
 
   // Show password screen if not authenticated
   if (!isAuthenticated) {
@@ -555,10 +678,69 @@ const ChatTerminal = () => {
           width: '100%',
           position: 'relative'
         }}>
+          <div style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '8px',
+            marginBottom: '12px',
+            color: '#a3a3a3',
+            fontSize: '0.85rem'
+          }}>
+            <div>
+              <span style={{ fontWeight: 600, color: '#d4d4d4' }}>Targets:</span>{' '}
+              {taggedAgents.length ? taggedAgents.join(', ') : 'All Agents'}
+            </div>
+            <div style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: '8px'
+            }}>
+              {AVAILABLE_AGENTS.map((agentId) => {
+                const isActive = taggedAgents.includes(agentId);
+                return (
+                  <button
+                    type="button"
+                    key={agentId}
+                    onClick={() => handleAgentToggle(agentId)}
+                    style={{
+                      padding: '6px 12px',
+                      borderRadius: '999px',
+                      border: `1px solid ${isActive ? '#7c3aed' : 'rgba(255,255,255,0.2)'}`,
+                      backgroundColor: isActive ? 'rgba(124,58,237,0.2)' : 'transparent',
+                      color: isActive ? '#c4b5fd' : '#a3a3a3',
+                      fontSize: '0.8rem',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s'
+                    }}
+                  >
+                    @{agentId}
+                  </button>
+                );
+              })}
+              <button
+                type="button"
+                onClick={handleClearTags}
+                style={{
+                  padding: '6px 12px',
+                  borderRadius: '999px',
+                  border: '1px solid rgba(255,255,255,0.2)',
+                  backgroundColor: 'transparent',
+                  color: '#a3a3a3',
+                  fontSize: '0.8rem',
+                  cursor: 'pointer'
+                }}
+              >
+                All Agents
+              </button>
+            </div>
+          </div>
           <input
             type="text"
+            ref={inputRef}
             value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
+            onChange={handleInputChange}
+            onSelect={handleInputSelect}
+            onKeyUp={handleInputSelect}
             placeholder={isAuthenticated ? "Send a message to the agents..." : "Authenticate to send messages"}
             disabled={!isAuthenticated || isLoading}
             style={{
@@ -601,6 +783,55 @@ const ChatTerminal = () => {
             </svg>
           </button>
         </form>
+        {isMentionMenuVisible && mentionOptions.length > 0 && (
+          <div
+            style={{
+              position: 'absolute',
+              bottom: mentionCoords.bottom + 80,
+              left: mentionCoords.left,
+              backgroundColor: 'rgba(18,18,18,0.95)',
+              border: '1px solid rgba(255,255,255,0.1)',
+              borderRadius: '12px',
+              padding: '8px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '4px',
+              maxWidth: '280px',
+              boxShadow: '0 10px 30px rgba(0,0,0,0.4)',
+              zIndex: 5
+            }}
+          >
+            {mentionOptions.map((agentId) => {
+              const isOnline = agentsStatus[agentId] === 'running';
+              return (
+                <button
+                  key={agentId}
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    insertMention(agentId);
+                  }}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    padding: '8px 12px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    backgroundColor: 'rgba(255,255,255,0.05)',
+                    color: '#e5e5e5',
+                    cursor: 'pointer'
+                  }}
+                >
+                  <span>@{agentId}</span>
+                  <span style={{ fontSize: '0.75rem', color: isOnline ? '#34d399' : '#f87171' }}>
+                    {isOnline ? 'online' : 'offline'}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

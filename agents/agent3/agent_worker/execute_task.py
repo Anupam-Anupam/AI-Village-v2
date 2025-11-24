@@ -112,8 +112,17 @@ async def execute_task_async(task_description: str, task_id: Optional[int] = Non
     Returns:
         Dictionary with execution results
     """
+    task_id_str = os.getenv("TASK_ID")
+    if task_id_str:
+        try:
+            task_id = int(task_id_str)
+        except:
+            pass
+    
+    print(f"Executing task ID: {task_id}")
     print(f"Executing task: {task_description}")
     print("=" * 60)
+    sys.stdout.flush()
     
     result = {
         "status": "success",

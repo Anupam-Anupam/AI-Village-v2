@@ -45,7 +45,8 @@ class Config:
         poll_interval_seconds = int(os.getenv("POLL_INTERVAL_SECONDS", "5"))
         
         timeout_val = os.getenv("RUN_TASK_TIMEOUT_SECONDS")
-        run_task_timeout_seconds = int(timeout_val) if timeout_val else None
+        # Default to 600 seconds (10 minutes) if not specified
+        run_task_timeout_seconds = int(timeout_val) if timeout_val else 600
         
         return cls(
             postgres_dsn=postgres_dsn,

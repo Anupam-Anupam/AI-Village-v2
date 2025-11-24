@@ -24,6 +24,29 @@ from storage import MongoAdapter, PostgresAdapter
 
 from agent_manager import AgentManager
 
+# Agent constants
+AGENT_IDS = ["agent1", "agent2", "agent3"]
+
+
+def detect_target_agents(text: Optional[str]) -> List[str]:
+    """Detect agent tags (e.g., @agent2) inside a piece of text."""
+    if not text:
+        return []
+    normalized = text.lower()
+    if "@all" in normalized:
+        return AGENT_IDS.copy()
+    detected: List[str] = []
+    for agent_id in AGENT_IDS:
+        if f"@{agent_id}" in normalized:
+            detected.append(agent_id)
+    # Preserve order but ensure uniqueness
+    unique: List[str] = []
+    for agent in detected:
+        if agent not in unique:
+            unique.append(agent)
+    return unique
+
+
 # Initialize FastAPI app
 app = FastAPI(
     title="AI Village Server",
@@ -78,6 +101,7 @@ class ChatMessageResponse(BaseModel):
     status: str
     task_id: Optional[int] = None
     agents_notified: Optional[int] = None
+    target_agents: Optional[List[str]] = None
 
 # Health check
 @app.get("/health")
@@ -90,7 +114,8 @@ def create_task(task: TaskRequest):
     """Create a new task and add it to the queue for all agents to compete."""
     try:
         # Create 3 separate tasks - one for each agent to compete
-        agent_ids = ["agent1", "agent2", "agent3"]
+        target_agents = detect_target_agents(task.text)
+        agent_ids = target_agents or AGENT_IDS
         task_ids = []
         
         for agent_id in agent_ids:
@@ -106,7 +131,8 @@ def create_task(task: TaskRequest):
             server_mongo.write_log(
                 level="info",
                 message=f"Task created for {agent_id}: {task.text[:50]}...",
-                task_id=str(task_id)
+                task_id=str(task_id),
+                metadata={"target_agents": agent_ids}
             )
         
         # Return the first task ID as the "primary" task
@@ -152,16 +178,24 @@ def send_chat_message(message: ChatMessageRequest):
         message_id = f"msg_{int(timestamp.timestamp() * 1000)}"
         
         # Store message in MongoDB (server DB)
+        metadata_payload = dict(message.metadata or {})
         chat_doc = {
             "message_id": message_id,
             "sender": message.sender,
             "message": message.message,
             "reply_to": message.reply_to,
-            "metadata": message.metadata or {},
+            "metadata": metadata_payload,
             "timestamp": timestamp.isoformat(),
             "read_by": []
         }
-        
+
+        # Determine target agents (defaults to everyone)
+        target_agents = detect_target_agents(message.message)
+        agent_ids = target_agents or AGENT_IDS
+
+        # Persist metadata about targeting with the chat message itself
+        metadata_payload["target_agents"] = agent_ids
+
         if server_mongo.db_name:
              server_mongo.client[server_mongo.db_name]["chat_messages"].insert_one(chat_doc)
         else:
@@ -171,9 +205,8 @@ def send_chat_message(message: ChatMessageRequest):
         task_id = None
         agents_notified = None
         
-        # If sender is "user", create 3 tasks - one for each agent to compete
+        # If sender is "user", create tasks (one per targeted agent)
         if message.sender == "user":
-            agent_ids = ["agent1", "agent2", "agent3"]
             task_ids = []
             
             for agent_id in agent_ids:
@@ -182,20 +215,20 @@ def send_chat_message(message: ChatMessageRequest):
                     title=message.message[:100],
                     description=message.message,
                     status="pending",
-                    metadata={"chat_message_id": message_id}
+                    metadata={"chat_message_id": message_id, "target_agents": agent_ids}
                 )
                 task_ids.append(agent_task_id)
                 
                 server_mongo.write_log(
                     level="info",
                     message=f"User message created task {agent_task_id} for {agent_id}",
-                    task_id=str(agent_task_id)
+                    task_id=str(agent_task_id),
+                    metadata={"chat_message_id": message_id, "target_agents": agent_ids}
                 )
             
             # Use the first task ID as the primary task ID for the chat message
             task_id = task_ids[0]
-            # All agents are notified (they each have their own task)
-            agents_notified = 3  # agent1, agent2, agent3
+            agents_notified = len(agent_ids)
         
         return ChatMessageResponse(
             message_id=message_id,
@@ -204,7 +237,8 @@ def send_chat_message(message: ChatMessageRequest):
             timestamp=timestamp.isoformat(),
             status="sent",
             task_id=task_id,
-            agents_notified=agents_notified
+            agents_notified=agents_notified,
+            target_agents=agent_ids
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to send message: {str(e)}")
@@ -284,7 +318,7 @@ def get_participants():
         ]
         
         # Add agents
-        for agent_id in ["agent1", "agent2", "agent3"]:
+        for agent_id in AGENT_IDS:
             participants.append({
                 "id": agent_id,
                 "type": "agent",
@@ -308,7 +342,7 @@ def get_chat_stats():
         
         total = collection.count_documents({})
         user_messages = collection.count_documents({"sender": "user"})
-        agent_messages = collection.count_documents({"sender": {"$in": ["agent1", "agent2", "agent3"]}})
+        agent_messages = collection.count_documents({"sender": {"$in": AGENT_IDS}})
         
         # Most active senders
         pipeline = [
@@ -360,7 +394,7 @@ def get_agent_responses(limit: int = 60):
     Filters out system messages like 'Task picked', 'Task completed' and prioritizes meaningful agent content.
     """
     try:
-        agent_ids = ["agent1", "agent2", "agent3"]
+        agent_ids = AGENT_IDS
         all_items = []
         
         # 1. Fetch logs from each agent's database using cluster mode adapter
@@ -667,7 +701,7 @@ async def evaluator_progress_graph():
 def get_agents_live(limit_per_agent: int = 10):
     """Get live agent data including progress."""
     try:
-        agent_ids = ["agent1", "agent2", "agent3"]
+        agent_ids = AGENT_IDS
         agents_data = []
         
         for agent_id in agent_ids:

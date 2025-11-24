@@ -187,6 +187,10 @@ class TrajectoryProcessor(FileSystemEventHandler):
                         # Format: YYYYMMDD HHMMSS
                         datetime_str = f"{date_str} {time_str}"
                         return datetime.strptime(datetime_str, "%Y%m%d %H%M%S")
+                    elif len(date_str) == 10 and len(time_str) == 8:
+                        # Format: YYYY-MM-DD HH-MM-SS
+                        datetime_str = f"{date_str} {time_str}"
+                        return datetime.strptime(datetime_str, "%Y-%m-%d %H-%M-%S")
         except Exception as e:
             print(f"[TrajectoryProcessor] Warning: Could not extract timestamp from path {file_path}: {e}")
         

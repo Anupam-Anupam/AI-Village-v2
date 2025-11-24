@@ -54,7 +54,7 @@ class AgentRunner:
         while self.running:
             try:
                 # Poll for current task
-                task = self.postgres.get_current_task()
+                task = self.postgres.get_current_task(self.config.agent_id)
                 
                 if not task:
                     # No task available, sleep and continue

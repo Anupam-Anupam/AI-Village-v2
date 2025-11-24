@@ -69,10 +69,10 @@ class PostgresClient:
             pass
         self._connect()
     
-    def get_current_task(self) -> Optional[Dict[str, Any]]:
+    def get_current_task(self, agent_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Get the most recent pending task from the tasks table.
-        Returns the task with the greatest ID (most recently created).
+        Optionally filter by agent_id so workers only pull their own tasks.
         
         Returns:
             Task record as dictionary or None if no task found
@@ -81,14 +81,19 @@ class PostgresClient:
         try:
             with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
                 # Select most recent pending task by ID (greatest ID = most recent)
-                cur.execute("""
+                query = """
                     SELECT id, agent_id, title, description, status, 
                            metadata, created_at, updated_at
                     FROM tasks
                     WHERE status = 'pending'
-                    ORDER BY id DESC
-                    LIMIT 1
-                """)
+                """
+                params = []
+                if agent_id:
+                    query += " AND agent_id = %s"
+                    params.append(agent_id)
+                
+                query += " ORDER BY id DESC LIMIT 1"
+                cur.execute(query, tuple(params))
                 row = cur.fetchone()
                 if row:
                     return dict(row)
