@@ -107,7 +107,8 @@ class AgentRunner:
         
         try:
             # Create unique working directory
-            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+            # Use readable timestamp format: YYYY-MM-DD_HH-MM-SS
+            timestamp = datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S")
             workdir = f"/tmp/agent_work/{self.config.agent_id}/{task_id}/{timestamp}"
             workdir_path = Path(workdir)
             workdir_path.mkdir(parents=True, exist_ok=True)
@@ -118,6 +119,7 @@ class AgentRunner:
             screenshots_dir.mkdir(exist_ok=True)
             
             # Log task picked
+            description_preview = task.get("description", "")[:50] if task.get("description") else "No description"
             self.mongo.write_log(
                 task_id=task_id,
                 level="debug",
@@ -125,6 +127,7 @@ class AgentRunner:
                 meta={"task_id": task_id, "title": task.get("title")}
             )
             print(f"[{self.config.agent_id}] Task {task_id} picked: {task.get('title', 'Unknown')}")
+            print(f"[{self.config.agent_id}] Description: {description_preview}...")
             
             # Insert initial progress
             self.postgres.insert_progress(
@@ -196,6 +199,7 @@ class AgentRunner:
                 while True:
                     # Check timeout
                     if self.config.run_task_timeout_seconds and time.time() - start_time > self.config.run_task_timeout_seconds:
+                        print(f"[{self.config.agent_id}] Task {task_id} timed out, killing process...")
                         process.kill()
                         # Wait for thread to finish to avoid zombie issues, though kill is drastic
                         break 
@@ -469,3 +473,4 @@ class AgentRunner:
     def stop(self):
         """Stop the polling loop gracefully."""
         self.running = False
+
