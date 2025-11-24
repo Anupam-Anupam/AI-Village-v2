@@ -56,9 +56,6 @@ const ScoreBreakdown = ({ scores, metrics, penalties, summary, isCompact = false
                 <div>Errors: <span style={{ color: '#fff' }}>{metrics.error_count}</span></div>
                 <div>API Calls: <span style={{ color: '#fff' }}>{metrics.total_api_calls}</span></div>
                 <div>Cost: <span style={{ color: '#fff' }}>${metrics.cost_usd?.toFixed(4)}</span></div>
-                <div>Completion Tokens: <span style={{ color: '#fff' }}>{metrics.completion_tokens?.toLocaleString()}</span></div>
-                <div>Prompt Tokens: <span style={{ color: '#fff' }}>{metrics.prompt_tokens?.toLocaleString()}</span></div>
-                <div>Total Tokens: <span style={{ color: '#fff' }}>{metrics.total_tokens?.toLocaleString()}</span></div>
              </div>
          </div>
       )}
