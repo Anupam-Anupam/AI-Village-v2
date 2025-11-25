@@ -33,14 +33,15 @@ const ScoreBreakdown = ({ scores, metrics, penalties, summary, isCompact = false
       <h4 className="details-header">Score Breakdown</h4>
       <div className="details-grid" style={gridStyle}>
         {metricsList.map(({ key, label }) => {
-          const val = scores?.[key] || 0;
-          // Assume 0-1 range
-          const percent = (val * 100).toFixed(1);
+          let val = scores?.[key] || 0;
+          // Normalize: if > 1, assume it's already a percentage
+          const normalized = val > 1 ? val / 100 : val;
+          const percent = (normalized * 100).toFixed(1);
           return (
             <div className="detail-metric" key={key}>
               <span className="label">{label}</span>
               <div className="bar-container">
-                <div className="bar" style={{ width: `${Math.min(val * 100, 100)}%` }} />
+                <div className="bar" style={{ width: `${Math.min(normalized * 100, 100)}%` }} />
               </div>
               <span className="value">{percent}%</span>
             </div>

@@ -83,6 +83,93 @@ class DataCollector:
                     except Exception:
                         pass
 
+        # Get task information including description and final output
+        task_info = None
+        initial_request = ""
+        final_output = ""
+        try:
+            # Try to convert task_id to integer
+            task_id_int = None
+            if isinstance(task_id, int):
+                task_id_int = task_id
+            elif isinstance(task_id, str):
+                if task_id.isdigit():
+                    task_id_int = int(task_id)
+                else:
+                    # Try to extract number from string
+                    import re
+                    match = re.search(r'(\d+)', task_id)
+                    if match:
+                        task_id_int = int(match.group(1))
+            
+            if task_id_int:
+                task_info = self.pg.get_task(task_id_int)
+                if task_info:
+                    # Get initial request from description or metadata
+                    initial_request = task_info.get("description", "") or ""
+                    
+                    # If description is empty, try to get from metadata
+                    if not initial_request:
+                        metadata = task_info.get("metadata", {})
+                        if isinstance(metadata, dict):
+                            # Try various possible fields for initial request
+                            initial_request = (
+                                metadata.get("input_text", "") or
+                                metadata.get("input_data", {}).get("input_text", "") if isinstance(metadata.get("input_data"), dict) else "" or
+                                metadata.get("task_description", "") or
+                                ""
+                            )
+                    
+                    # Get final output from metadata
+                    metadata = task_info.get("metadata", {})
+                    if isinstance(metadata, dict):
+                        # Try various possible fields for final output
+                        output_data = metadata.get("output_data", {})
+                        if isinstance(output_data, dict):
+                            final_output = (
+                                output_data.get("response", "") or
+                                output_data.get("result", "") or
+                                output_data.get("output", "") or
+                                str(output_data) if output_data else ""
+                            )
+                        # Also check if output is directly in metadata
+                        if not final_output:
+                            final_output = (
+                                metadata.get("response", "") or
+                                metadata.get("result", "") or
+                                metadata.get("output", "") or
+                                ""
+                            )
+                    
+                    self.logger.info(json.dumps({
+                        "event": "task_info_collected",
+                        "task_id": task_id,
+                        "has_initial_request": bool(initial_request),
+                        "has_final_output": bool(final_output),
+                        "request_length": len(initial_request),
+                        "output_length": len(final_output),
+                        "task_status": task_info.get("status", "")
+                    }))
+                else:
+                    self.logger.warning(json.dumps({
+                        "event": "task_not_found",
+                        "task_id": task_id,
+                        "task_id_int": task_id_int
+                    }))
+            else:
+                self.logger.warning(json.dumps({
+                    "event": "task_id_conversion_failed",
+                    "task_id": task_id,
+                    "task_id_type": type(task_id).__name__
+                }))
+        except Exception as e:
+            self.logger.warning(json.dumps({
+                "event": "task_info_fetch_error",
+                "task_id": task_id,
+                "error": str(e),
+                "error_type": type(e).__name__
+            }))
+        
         data = {
             "agent_id": agent_id,
             "task_id": task_id,
@@ -98,6 +185,8 @@ class DataCollector:
                 "total_api_calls": total_api_calls,
             },
             "progress": progress,
+            "initial_request": initial_request,
+            "final_output": final_output,
             "collected_at": self._now().isoformat(),
         }
         self.logger.info(json.dumps({"event": "collected_task", "agent_id": agent_id, "task_id": task_id}))
