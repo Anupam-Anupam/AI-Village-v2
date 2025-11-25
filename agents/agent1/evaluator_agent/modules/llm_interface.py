@@ -198,3 +198,171 @@ class LLMInterface:
             f"errors={m.get('error_count', 0)}, retries={m.get('retry_count', 0)}, "
             f"dependency_requests={m.get('human_or_agent_requests', 0)}, api_calls={m.get('total_api_calls', 0)}."
         )
+
+    def generate_structured_feedback(self, agent_id: str, reports: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Generate structured feedback for an agent based on their evaluation reports.
+        
+        Returns:
+            Dict with keys: strengths, weaknesses, recommendations, overall_assessment
+        """
+        if not reports:
+            return {
+                "score": 0,
+                "assessment": "poor",
+                "strengths": [],
+                "weaknesses": [],
+                "recommendations": [],
+                "overall_assessment": "No evaluation data available for this agent."
+            }
+        
+        # Aggregate metrics and scores
+        total_tasks = len(reports)
+        avg_score = sum(r.get("scores", {}).get("final_score", 0) for r in reports) / total_tasks if total_tasks > 0 else 0
+        if avg_score <= 1.0:
+            avg_score *= 100
+        
+        # Determine assessment word based on score benchmarks
+        def get_assessment_word(score):
+            if score >= 90:
+                return "perfect"
+            elif score >= 80:
+                return "excellent"
+            elif score >= 60:
+                return "good"
+            elif score >= 40:
+                return "fair"
+            else:
+                return "poor"
+        
+        assessment_word = get_assessment_word(avg_score)
+        
+        total_errors = sum(r.get("metrics", {}).get("error_count", 0) for r in reports)
+        total_time = sum(r.get("metrics", {}).get("completion_time_s", 0) for r in reports)
+        avg_time = total_time / total_tasks if total_tasks > 0 else 0
+        total_cost = sum(r.get("metrics", {}).get("cost_usd", 0) for r in reports)
+        
+        # Get recent summaries
+        recent_summaries = [r.get("evaluation_summary", "") for r in reports[-3:]]
+        
+        if not self.api_key:
+            return self._fallback_feedback(agent_id, avg_score, total_errors, avg_time, total_cost)
+        
+        prompt = (
+            f"You are evaluating agent performance. Generate structured feedback for {agent_id}.\n\n"
+            f"Performance Metrics:\n"
+            f"- Average Score: {avg_score:.1f}%\n"
+            f"- Total Tasks Evaluated: {total_tasks}\n"
+            f"- Total Errors: {total_errors}\n"
+            f"- Average Completion Time: {avg_time:.1f}s\n"
+            f"- Total Cost: ${total_cost:.4f}\n\n"
+            f"Recent Evaluation Summaries:\n" + "\n".join([f"- {s}" for s in recent_summaries if s]) + "\n\n"
+            f"Provide structured feedback in JSON format with these exact keys:\n"
+            f'{{"strengths": ["strength1", "strength2"], "weaknesses": ["weakness1", "weakness2"], '
+            f'"recommendations": ["recommendation1", "recommendation2"], '
+            f'"overall_assessment": "one sentence summary starting with agent name, e.g. \\"{agent_id} has a moderate performance score of {avg_score:.1f}%\\""}}\n\n'
+            f"IMPORTANT for recommendations:\n"
+            f"- Focus on how to fine-tune system prompts (e.g., 'Adjust system prompt to emphasize X', 'Clarify instructions in system prompt for Y')\n"
+            f"- Focus on how to fine-tune the model itself (e.g., 'Consider fine-tuning model parameters for Z', 'Adjust temperature/sampling settings')\n"
+            f"- Be specific about prompt engineering and model configuration improvements\n\n"
+            f"Be specific and actionable. Return ONLY valid JSON, no other text."
+        )
+        
+        try:
+            resp = requests.post(
+                f"{self.api_base}/chat/completions",
+                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": self.model,
+                    "messages": [
+                        {"role": "system", "content": "You are a performance evaluator. Respond with only valid JSON."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0.3,
+                    "max_tokens": 500,
+                    "response_format": {"type": "json_object"}
+                },
+                timeout=30,
+            )
+            if resp.ok:
+                data = resp.json()
+                content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+                import json
+                try:
+                    feedback = json.loads(content)
+                    # Ensure all required keys exist
+                    return {
+                        "score": round(avg_score, 1),
+                        "assessment": assessment_word,
+                        "strengths": feedback.get("strengths", []),
+                        "weaknesses": feedback.get("weaknesses", []),
+                        "recommendations": feedback.get("recommendations", []),
+                        "overall_assessment": feedback.get("overall_assessment", "No assessment available.")
+                    }
+                except json.JSONDecodeError:
+                    self.logger.warning(f"Failed to parse feedback JSON: {content[:100]}")
+        except Exception as e:
+            self.logger.warning(f"Failed to generate structured feedback: {e}")
+        
+        return self._fallback_feedback(agent_id, avg_score, total_errors, avg_time, total_cost)
+    
+    def _fallback_feedback(self, agent_id: str, avg_score: float, total_errors: int, avg_time: float, total_cost: float) -> Dict[str, Any]:
+        """Fallback structured feedback using heuristics."""
+        # Determine assessment word based on score benchmarks
+        def get_assessment_word(score):
+            if score >= 90:
+                return "perfect"
+            elif score >= 80:
+                return "excellent"
+            elif score >= 60:
+                return "good"
+            elif score >= 40:
+                return "fair"
+            else:
+                return "poor"
+        
+        assessment_word = get_assessment_word(avg_score)
+        strengths = []
+        weaknesses = []
+        recommendations = []
+        
+        if avg_score >= 80:
+            strengths.append("High average performance score")
+        elif avg_score < 60:
+            weaknesses.append("Below average performance score")
+        
+        if total_errors == 0:
+            strengths.append("No errors recorded")
+        elif total_errors > 5:
+            weaknesses.append(f"High error count ({total_errors})")
+            recommendations.append("Focus on error reduction and debugging")
+        
+        if avg_time < 60:
+            strengths.append("Fast task completion")
+        elif avg_time > 300:
+            weaknesses.append("Slow task completion times")
+            recommendations.append("Optimize task execution efficiency")
+        
+        if total_cost < 0.10:
+            strengths.append("Cost-efficient operations")
+        elif total_cost > 1.0:
+            weaknesses.append("High operational costs")
+            recommendations.append("Review and optimize API usage to reduce costs")
+        
+        if not strengths:
+            strengths.append("Agent is operational")
+        
+        if not weaknesses:
+            weaknesses.append("No significant issues identified")
+        
+        if not recommendations:
+            recommendations.append("Continue monitoring performance")
+        
+        return {
+            "score": round(avg_score, 1),
+            "assessment": assessment_word,
+            "strengths": strengths,
+            "weaknesses": weaknesses,
+            "recommendations": recommendations,
+            "overall_assessment": f"{agent_id} shows {'strong' if avg_score >= 70 else 'moderate' if avg_score >= 50 else 'weak'} performance with an average score of {avg_score:.1f}%."
+        }

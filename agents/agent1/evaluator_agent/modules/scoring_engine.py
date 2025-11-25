@@ -93,25 +93,30 @@ class ScoringEngine:
             "output_preview": final_output[:100] + "..." if final_output and len(final_output) > 100 else (final_output or "")
         }))
         
+        # Get evaluator output score (0-100) - this is the primary factor
+        output_score = 0.0
         if self.llm and has_request and has_output:
             # Use LLM to evaluate correctness by comparing request vs output
             try:
-                correctness = self.llm.evaluate_correctness(initial_request, final_output)
+                correctness_ratio = self.llm.evaluate_correctness(initial_request, final_output)
+                # Convert to score out of 100
+                output_score = correctness_ratio * 100.0
                 self.logger.info(json.dumps({
-                    "event": "correctness_evaluated",
+                    "event": "output_score_evaluated",
                     "task_id": task_id,
-                    "correctness": correctness,
+                    "output_score": output_score,
                     "method": "llm"
                 }))
             except Exception as e:
                 self.logger.warning(json.dumps({
-                    "event": "correctness_evaluation_error",
+                    "event": "output_score_evaluation_error",
                     "task_id": task_id,
                     "error": str(e),
                     "fallback": "heuristic"
                 }))
-                # Fallback to heuristic if LLM fails
-                correctness = self._heuristic_correctness(data, error_count)
+                # Fallback: use heuristic correctness converted to 0-100
+                correctness_ratio = self._heuristic_correctness(data, error_count)
+                output_score = correctness_ratio * 100.0
         else:
             # Fallback to heuristic if no LLM or missing data
             reason = []
@@ -123,95 +128,60 @@ class ScoringEngine:
                 reason.append("no_final_output")
             
             self.logger.info(json.dumps({
-                "event": "correctness_fallback_to_heuristic",
+                "event": "output_score_fallback_to_heuristic",
                 "task_id": task_id,
                 "reason": ", ".join(reason)
             }))
-            correctness = self._heuristic_correctness(data, error_count)
+            correctness_ratio = self._heuristic_correctness(data, error_count)
+            output_score = correctness_ratio * 100.0
         
-        # Apply minimum score floor for completed tasks
-        is_completed = False
-        progress = data.get("progress", [])
-        if progress:
-            last = progress[-1]
-            status = str(last.get("status", "") or "").lower()
-            if "done" in status or "complete" in status or status == "success":
-                is_completed = True
-        
-        # Also check task_info if available
-        if not is_completed:
-            task_info = data.get("task_info")
-            if task_info:
-                task_status = str(task_info.get("status", "") or "").lower()
-                if "done" in task_status or "complete" in task_status or task_status == "success":
-                    is_completed = True
-        
-        # If task is completed, ensure minimum correctness of 0.3 (30%)
-        if is_completed and correctness < 0.3:
-            self.logger.info(json.dumps({
-                "event": "correctness_floor_applied",
-                "task_id": task_id,
-                "original_correctness": correctness,
-                "adjusted_correctness": 0.3,
-                "reason": "task_completed"
-            }))
-            correctness = 0.3
+        # Clamp output score to 0-100
+        output_score = max(0.0, min(100.0, output_score))
         
         self.logger.info(json.dumps({
-            "event": "correctness_final",
+            "event": "output_score_final",
             "task_id": task_id,
-            "correctness": correctness,
-            "is_completed": is_completed
+            "output_score": output_score
         }))
 
-        # efficiency: shorter completion, fewer API calls, fewer retries
-        efficiency = self._clip(0.4 * (1.0 / (1.0 + completion_time / 300.0)) + 0.3 * (1.0 / (1.0 + total_api_calls / 50.0)) + 0.3 * (1.0 / (1.0 + retry_count)))
-
-        # quality: fewer errors and retries + some stability reflection
-        quality = self._clip(0.6 * (1.0 / (1.0 + error_count)) + 0.4 * (1.0 / (1.0 + retry_count)))
-
-        # stability: inversely related to errors and long runs
-        stability = self._clip(0.5 * (1.0 / (1.0 + error_count)) + 0.5 * (1.0 / (1.0 + completion_time / 600.0)))
-
-        # autonomy: penalize dependency requests
-        autonomy = self._clip(1.0 / (1.0 + deps))
-
-        # resource_efficiency: low mem and CPU use is better
-        resource_efficiency = self._clip(0.5 * (1.0 / (1.0 + mem / 1024.0)) + 0.5 * (1.0 / (1.0 + cpu / 100.0)))
-
-        penalties = {
-            "dependency_penalty": min(0.3, 0.05 * deps),
-            "timeout_penalty": 0.0,  # could be inferred from logs in future
-            "error_penalty": min(0.3, 0.05 * error_count),
-        }
-
-        weighted = (
-            self.weights["correctness"] * correctness
-            + self.weights["efficiency"] * efficiency
-            + self.weights["quality"] * quality
-            + self.weights["stability"] * stability
-            + self.weights["autonomy"] * autonomy
-            + self.weights["resource_efficiency"] * resource_efficiency
-        )
-        final_score = max(0.0, weighted - sum(penalties.values()))
-
-        # Cost penalty: apply a small penalty for high costs (optional)
-        # This keeps the score in 0-1 range while accounting for cost efficiency
+        # Simplified scoring formula using only: output_score, time, errors, cost
+        # Base score starts from output_score (0-100)
+        base_score = output_score
+        
+        # Time penalty: penalize longer completion times
+        # Normalize: 0-300s = no penalty, 300-600s = small penalty, 600s+ = larger penalty
+        time_penalty = 0.0
+        if completion_time > 300:
+            # Penalize 1 point per 10 seconds over 300s, max 20 points
+            time_penalty = min(20.0, (completion_time - 300) / 10.0)
+        
+        # Error penalty: penalize errors
+        # Each error costs 2 points, max 20 points
+        error_penalty = min(20.0, error_count * 2.0)
+        
+        # Cost penalty: penalize high costs
+        # $0-0.10 = no penalty, $0.10-1.00 = small penalty, $1.00+ = larger penalty
         cost = float(m.get("cost_usd", 0.0) or 0.0)
-        if cost > 0:
-            # Apply a small penalty for costs above $0.10 (normalize to reasonable range)
-            # Cost penalty is capped at 0.1 (10% reduction)
-            cost_penalty = min(0.1, cost / 10.0)  # $1.00 = 0.1 penalty, $0.10 = 0.01 penalty
-            final_score = max(0.0, final_score - cost_penalty)
+        cost_penalty = 0.0
+        if cost > 0.10:
+            # Penalize 1 point per $0.10 over $0.10, max 10 points
+            cost_penalty = min(10.0, (cost - 0.10) * 10.0)
+        
+        # Calculate final score: base score minus penalties
+        final_score = max(0.0, base_score - time_penalty - error_penalty - cost_penalty)
+        
+        # Convert to 0-1 range for consistency with existing code
+        final_score_normalized = final_score / 100.0
 
         scores = {
-            "correctness": round(correctness, 4),
-            "efficiency": round(efficiency, 4),
-            "quality": round(quality, 4),
-            "stability": round(stability, 4),
-            "autonomy": round(autonomy, 4),
-            "resource_efficiency": round(resource_efficiency, 4),
-            "final_score": round(final_score, 4),
+            "output_score": round(output_score, 2),  # Score out of 100 from evaluator
+            "final_score": round(final_score_normalized, 4),  # Final score in 0-1 range
+        }
+
+        penalties = {
+            "time_penalty": round(time_penalty, 2),
+            "error_penalty": round(error_penalty, 2),
+            "cost_penalty": round(cost_penalty, 2),
         }
 
         return {"scores": scores, "penalties": penalties}

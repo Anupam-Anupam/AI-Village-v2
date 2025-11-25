@@ -46,8 +46,8 @@ def create_app() -> FastAPI:
     pg = PostgresAdapter()
 
     collector = DataCollector(mongo=mongo, pg=pg, logger=logger)
-    scorer = ScoringEngine(logger=logger)
     llm = LLMInterface(logger=logger)
+    scorer = ScoringEngine(logger=logger, llm=llm)
     builder = ReportBuilder(logger=logger)
     scheduler = EvaluatorScheduler(collector, scorer, llm, builder, logger=logger)
 
@@ -81,22 +81,39 @@ def create_app() -> FastAPI:
                 if agent_id:
                     agents.add(agent_id)
                     
+                    # Check if task is completed
+                    task_id = report.get("task_id")
+                    is_completed = False
+                    if task_id:
+                        try:
+                            task_id_int = int(task_id)
+                            task = pg.get_task(task_id_int)
+                            if task and str(task.get("status", "")).lower() == "completed":
+                                is_completed = True
+                        except Exception:
+                            pass
+                    
                     # Get the latest score for each agent
                     if report.get("scores") and isinstance(report["scores"], dict):
-                        final_score = report["scores"].get("final_score", 0)
-                        # Convert to percentage if it's a fraction (0-1)
-                        if final_score <= 1.0:
-                            final_score *= 100
+                        # If task is completed, set score to 100%
+                        if is_completed:
+                            final_score = 100.0
+                        else:
+                            final_score = report["scores"].get("final_score", 0)
+                            # Convert to percentage if it's a fraction (0-1)
+                            if final_score <= 1.0:
+                                final_score *= 100
                         
                         # Update agent score (will keep updating to latest)
                         agent_scores[agent_id] = {
                             "score": round(final_score, 2),
-                            "task_id": report.get("task_id"),
+                            "task_id": task_id,
                             "evaluated_at": report.get("evaluated_at"),
                             "breakdown": report.get("scores", {}),
                             "metrics": report.get("metrics", {}),
                             "penalties": report.get("penalties", {}),
-                            "summary": report.get("evaluation_summary", "")
+                            "summary": report.get("evaluation_summary", ""),
+                            "is_completed": is_completed
                         }
                 
                 if report.get("task_id"):
@@ -114,6 +131,14 @@ def create_app() -> FastAPI:
             
             avg_score = (total_score / score_count) if score_count > 0 else 0
             
+            # Generate structured feedback for each agent
+            agent_feedback = {}
+            for agent_id in agents:
+                agent_reports = scheduler.get_agent_reports(agent_id)
+                if agent_reports:
+                    feedback = llm.generate_structured_feedback(agent_id, agent_reports)
+                    agent_feedback[agent_id] = feedback
+            
             return {
                 "status": "running",
                 "scheduler_active": scheduler.running,
@@ -122,6 +147,7 @@ def create_app() -> FastAPI:
                 "tasks_evaluated": len(tasks),
                 "average_score": round(avg_score, 2),
                 "agent_scores": agent_scores,
+                "agent_feedback": agent_feedback,
                 "recent_evaluations": all_reports[:5] if all_reports else []
             }
         except Exception as e:
@@ -151,6 +177,14 @@ def create_app() -> FastAPI:
             except Exception:
                 pass
             raise HTTPException(status_code=404, detail="Report not found")
+        # Force re-evaluation with new scoring formula
+        try:
+            data = collector.collect_for_task(agent_id=report.get("agent_id"), task_id=task_id)
+            pack = scorer.score_task(data)
+            summary = llm.summarize({**data, **pack})
+            report = builder.build_report(data, pack, summary)
+        except Exception:
+            pass  # Return cached report if re-evaluation fails
         return report
 
     @app.get("/agent/{agent_id}")

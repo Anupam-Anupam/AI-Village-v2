@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { API_BASE, REFRESH_INTERVALS } from '../config';
 import { buildAgentMessage, formatTime } from '../utils/chatUtils';
+import liveIcon from '../images/live.png';
+import evaluatorIcon from '../images/evaluator.png';
 
 const Sidebar = ({ activeTab, setActiveTab }) => {
   const [latestMessages, setLatestMessages] = useState([]);
@@ -49,14 +51,18 @@ const Sidebar = ({ activeTab, setActiveTab }) => {
           className={`sidebar-tab ${activeTab === 'agents' ? 'sidebar-tab--active' : ''}`}
           onClick={() => setActiveTab('agents')}
         >
-          <span className="sidebar-tab__icon">🤖</span>
+          <span className="sidebar-tab__icon">
+            <img src={liveIcon} alt="Live Agents" style={{ width: '3.0rem', height: '3.0rem', objectFit: 'overflow' }} />
+          </span>
           <span className="sidebar-tab__label">Live Agents</span>
         </button>
         <button
           className={`sidebar-tab ${activeTab === 'evaluator' ? 'sidebar-tab--active' : ''}`}
           onClick={() => setActiveTab('evaluator')}
         >
-          <span className="sidebar-tab__icon">📊</span>
+          <span className="sidebar-tab__icon">
+            <img src={evaluatorIcon} alt="Evaluator" style={{ width: '2.7rem', height: '2.7rem', objectFit: 'overflow' }} />
+          </span>
           <span className="sidebar-tab__label">Evaluator</span>
         </button>
 
