@@ -277,7 +277,7 @@ const EvaluatorView = () => {
                     <div className="graph-container">
                         <img 
                         src={progressGraph.image_data_url} 
-                        alt="Agent Progress Graph"
+                        alt="Agent Progress Graph" 
                         onClick={() => setIsGraphExpanded(true)}
                         style={{ cursor: 'pointer', transition: 'transform 0.2s' }}
                         onMouseEnter={(e) => e.target.style.transform = 'scale(1.02)'}
@@ -311,7 +311,7 @@ const EvaluatorView = () => {
               <div className="stats-banner__item">
                 <span className="stats-banner__label">Avg. Success Rate</span>
                 <span className="stats-banner__value">{isNaN(stats.averageScore) ? '0.0' : stats.averageScore.toFixed(1)}%</span>
-              </div>
+                </div>
             </div>
 
             <div className="evaluator-card">
@@ -430,14 +430,14 @@ const EvaluatorView = () => {
                                                 <div>
                                                     <div style={{ fontSize: '0.85rem', fontWeight: 600, color: '#a78bfa', marginBottom: '8px' }}>
                                                         Recommendations
-                                                    </div>
+                    </div>
                                                     <ul style={{ margin: 0, paddingLeft: '20px', fontSize: '0.85rem', color: 'var(--muted-text)' }}>
                                                         {feedback.recommendations.map((rec, idx) => (
                                                             <li key={idx} style={{ marginBottom: '4px' }}>{rec}</li>
-                                                        ))}
+                        ))}
                                                     </ul>
-                                                </div>
-                                            )}
+                    </div>
+                    )}
                                         </div>
                                     </div>
                                 </div>

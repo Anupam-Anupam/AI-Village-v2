@@ -99,10 +99,10 @@ def create_app() -> FastAPI:
                         if is_completed:
                             final_score = 100.0
                         else:
-                            final_score = report["scores"].get("final_score", 0)
-                            # Convert to percentage if it's a fraction (0-1)
-                            if final_score <= 1.0:
-                                final_score *= 100
+                        final_score = report["scores"].get("final_score", 0)
+                        # Convert to percentage if it's a fraction (0-1)
+                        if final_score <= 1.0:
+                            final_score *= 100
                         
                         # Update agent score (will keep updating to latest)
                         agent_scores[agent_id] = {

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { API_BASE, REFRESH_INTERVALS } from '../config';
 import { ensureDate, normalizePercent, formatPercentLabel, buildAgentMessage, formatTime } from '../utils/chatUtils';
+import collaborateIcon from '../images/928470d7-332a-416c-82cf-871acd43342a.png';
 
 const AVAILABLE_AGENTS = ['agent1', 'agent2', 'agent3'];
 
@@ -39,6 +40,7 @@ const ChatTerminal = () => {
   const [isMentionMenuVisible, setMentionMenuVisible] = useState(false);
   const [mentionCoords, setMentionCoords] = useState({ left: 0, top: 0 });
   const [isCollaborateMode, setIsCollaborateMode] = useState(false);
+  const [isHoveringModeButton, setIsHoveringModeButton] = useState(false);
 
   const upsertMessages = useCallback((incoming = [], { restampNew = false } = {}) => {
     if (!incoming.length) {
@@ -277,6 +279,16 @@ const ChatTerminal = () => {
     prevMessageCountRef.current = messages.length;
   }, [messages]);
 
+  // Auto-scroll to bottom when chat opens (history finishes loading) or when authenticated
+  useEffect(() => {
+    if (!historyLoading && messages.length > 0) {
+      // Small delay to ensure DOM is ready
+      setTimeout(() => {
+        scrollToBottom();
+      }, 100);
+    }
+  }, [historyLoading, isAuthenticated, messages.length, scrollToBottom]);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!isAuthenticated) {
@@ -478,45 +490,30 @@ const ChatTerminal = () => {
         zIndex: 10
       }}>
         <h2 style={{ margin: 0, fontSize: '1.1rem', color: '#e5e5e5', fontWeight: 600 }}>AI Village Chat</h2>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <span style={{ fontSize: '0.9rem', color: isCollaborateMode ? '#a78bfa' : '#a3a3a3', transition: 'color 0.2s' }}>
-            {isCollaborateMode ? 'Collaborate Mode' : 'Solo Mode'}
-          </span>
-          <div 
-            onClick={() => setIsCollaborateMode(!isCollaborateMode)}
-            style={{
-              width: '44px',
-              height: '24px',
-              backgroundColor: isCollaborateMode ? 'rgba(124, 58, 237, 0.6)' : 'rgba(255, 255, 255, 0.2)',
-              borderRadius: '12px',
-              position: 'relative',
-              cursor: 'pointer',
-              transition: 'background-color 0.2s'
-            }}
-          >
-            <div style={{
-              width: '20px',
-              height: '20px',
-              backgroundColor: '#fff',
-              borderRadius: '50%',
-              position: 'absolute',
-              top: '2px',
-              left: isCollaborateMode ? '22px' : '2px',
-              transition: 'left 0.2s',
-              boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
-            }} />
-          </div>
-        </div>
+        <span 
+          key={isCollaborateMode ? 'collaborate' : 'solo'}
+          className="mode-text-transition"
+          style={{ 
+            fontSize: '0.9rem', 
+            color: isCollaborateMode ? '#a78bfa' : '#a3a3a3', 
+            transition: 'color 0.4s ease-in-out',
+            marginRight: '100px',
+            display: 'inline-block'
+          }}
+        >
+          {isCollaborateMode ? 'Collaborate Mode' : 'Solo Mode'}
+        </span>
       </div>
 
       {/* Chat content with higher z-index */}
       <div 
         ref={messagesContainerRef}
         onScroll={checkScrollPosition}
+        className="chat-messages-container"
         style={{
           flex: 1,
           overflowY: 'auto',
-          padding: '20px',
+          padding: '20px 25px 20px 20px',
           display: 'flex',
           flexDirection: 'column',
           gap: '24px',
@@ -715,73 +712,70 @@ const ChatTerminal = () => {
           flexDirection: 'column',
           gap: '12px'
         }}>
-          {/* Collaborate Mode Toggle */}
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '12px',
-            padding: '8px 12px',
-            backgroundColor: 'rgba(26, 26, 26, 0.6)',
-            borderRadius: '12px',
-            border: '1px solid rgba(255, 255, 255, 0.05)'
-          }}>
-            <label style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '10px',
-              cursor: 'pointer',
-              userSelect: 'none',
-              flex: 1
-            }}>
-              <div style={{
-                position: 'relative',
-                width: '44px',
-                height: '24px',
-                backgroundColor: isCollaborateMode ? '#7c3aed' : 'rgba(115, 115, 115, 0.3)',
-                borderRadius: '12px',
-                transition: 'background-color 0.3s',
-                boxShadow: isCollaborateMode ? '0 0 10px rgba(124, 58, 237, 0.4)' : 'none'
-              }}>
-                <input
-                  type="checkbox"
-                  checked={isCollaborateMode}
-                  onChange={(e) => setIsCollaborateMode(e.target.checked)}
-                  style={{ display: 'none' }}
-                />
-                <div style={{
-                  position: 'absolute',
-                  top: '2px',
-                  left: isCollaborateMode ? '22px' : '2px',
-                  width: '20px',
-                  height: '20px',
-                  backgroundColor: '#ffffff',
-                  borderRadius: '50%',
-                  transition: 'left 0.3s',
-                  boxShadow: '0 2px 4px rgba(0, 0, 0, 0.2)'
-                }} />
-              </div>
-              <span style={{
-                color: isCollaborateMode ? '#a78bfa' : '#737373',
-                fontSize: '0.9rem',
-                fontWeight: '500',
-                transition: 'color 0.3s'
-              }}>
-                {isCollaborateMode ? '🤝 Collaborate Mode' : '👤 Solo Mode'}
-              </span>
-            </label>
-            <div style={{
-              fontSize: '0.75rem',
-              color: '#525252',
-              fontStyle: 'italic'
-            }}>
-              {isCollaborateMode ? 'Agents work together on subtasks' : 'Each agent works independently'}
-            </div>
-          </div>
-
           <form onSubmit={handleSubmit} style={{
             width: '100%',
-            position: 'relative'
+            position: 'relative',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px'
           }}>
+          <div style={{ position: 'relative' }}>
+            {isHoveringModeButton && (
+              <div style={{
+                position: 'absolute',
+                bottom: '100%',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                marginBottom: '8px',
+                padding: '10px 14px',
+                backgroundColor: 'rgba(20, 20, 20, 1)',
+                color: '#e5e5e5',
+                fontSize: '0.85rem',
+                borderRadius: '8px',
+                border: '1px solid rgba(255, 255, 255, 0.1)',
+                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.4)',
+                zIndex: 1000,
+                pointerEvents: 'none',
+                opacity: 0.8,
+                width: '240px',
+                textAlign: 'center',
+                lineHeight: '1.4'
+              }}>
+                {isCollaborateMode 
+                  ? 'Collaborate: Agents work together to complete a given task'
+                  : 'Solo: Agents compete to do the same task'
+                }
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => setIsCollaborateMode(!isCollaborateMode)}
+              onMouseEnter={() => setIsHoveringModeButton(true)}
+              onMouseLeave={() => setIsHoveringModeButton(false)}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                padding: '8px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transition: 'all 0.3s',
+                opacity: isCollaborateMode ? 1 : 0.4,
+                filter: isCollaborateMode ? 'none' : 'grayscale(100%)'
+              }}
+            >
+              <img 
+                src={collaborateIcon} 
+                alt="Collaborate Mode" 
+                style={{
+                  width: '50px',
+                  height: '50px',
+                  objectFit: 'overflow'
+                }}
+              />
+            </button>
+          </div>
           <input
             type="text"
             ref={inputRef}
@@ -792,7 +786,7 @@ const ChatTerminal = () => {
             placeholder={isAuthenticated ? "Send a message to the agents..." : "Authenticate to send messages"}
             disabled={!isAuthenticated || isLoading}
             style={{
-              width: '100%',
+              flex: 1,
               padding: '16px 50px 16px 20px',
               backgroundColor: 'rgba(26, 26, 26, 0.8)',
               border: '1px solid rgba(255, 255, 255, 0.1)',
