@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { API_BASE, REFRESH_INTERVALS } from '../config';
 import { ensureDate, normalizePercent, formatPercentLabel, buildAgentMessage, formatTime } from '../utils/chatUtils';
 import collaborateIcon from '../images/928470d7-332a-416c-82cf-871acd43342a.png';
+import Aurora from './Aurora';
 
 const AVAILABLE_AGENTS = ['agent1', 'agent2', 'agent3'];
 
@@ -41,6 +42,8 @@ const ChatTerminal = () => {
   const [mentionCoords, setMentionCoords] = useState({ left: 0, top: 0 });
   const [isCollaborateMode, setIsCollaborateMode] = useState(false);
   const [isHoveringModeButton, setIsHoveringModeButton] = useState(false);
+  const [sessionStartTime, setSessionStartTime] = useState(null);
+  const [firstTaskId, setFirstTaskId] = useState(null);
 
   const upsertMessages = useCallback((incoming = [], { restampNew = false } = {}) => {
     if (!incoming.length) {
@@ -70,12 +73,12 @@ const ChatTerminal = () => {
         map.set(msg.id, { ...msg, timestamp });
       });
 
-      // Sort by task ID (lowest at the bottom) and keep only the last 50 messages
+      // Sort by timestamp to maintain chronological order (like a chat)
+      // Messages with the same task ID will be grouped together, but maintain time order
       const sortedMessages = Array.from(map.values()).sort((a, b) => {
-        // Extract task IDs, defaulting to 0 if not present
-        const taskIdA = parseInt(a.taskId) || 0;
-        const taskIdB = parseInt(b.taskId) || 0;
-        return taskIdA - taskIdB;
+        const timeA = a.timestamp instanceof Date ? a.timestamp.getTime() : new Date(a.timestamp).getTime();
+        const timeB = b.timestamp instanceof Date ? b.timestamp.getTime() : new Date(b.timestamp).getTime();
+        return timeA - timeB;
       });
       return sortedMessages.slice(-50);
     });
@@ -223,6 +226,17 @@ const ChatTerminal = () => {
         if (latestTimestamp) {
           lastFetchTimeRef.current = latestTimestamp.toISOString();
         }
+        
+        // Track first task ID from messages if session has started but firstTaskId not set
+        if (sessionStartTime && !firstTaskId) {
+          const taskIds = normalized
+            .map(msg => parseInt(msg.taskId) || null)
+            .filter(id => id !== null);
+          if (taskIds.length > 0) {
+            const minTaskId = Math.min(...taskIds);
+            setFirstTaskId(minTaskId);
+          }
+        }
       }
       setHistoryError(null);
     } catch (error) {
@@ -270,24 +284,57 @@ const ChatTerminal = () => {
 
   // Scroll to bottom function
   const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (messagesContainerRef.current) {
+      const container = messagesContainerRef.current;
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior: 'smooth'
+      });
+    } else if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
     setHasNewMessages(false);
   }, []);
 
   // Effect to update prevMessageCountRef when messages change
   useEffect(() => {
     prevMessageCountRef.current = messages.length;
-  }, [messages]);
+    
+    // Auto-scroll to bottom when new messages are added (only if user is near bottom)
+    if (messagesContainerRef.current && sessionStartTime) {
+      const container = messagesContainerRef.current;
+      const { scrollTop, scrollHeight, clientHeight } = container;
+      const isNearBottom = scrollHeight - scrollTop - clientHeight < 100; // 100px threshold
+      
+      if (isNearBottom) {
+        // Small delay to ensure DOM is updated
+        requestAnimationFrame(() => {
+          if (messagesContainerRef.current) {
+            messagesContainerRef.current.scrollTo({
+              top: messagesContainerRef.current.scrollHeight,
+              behavior: 'smooth'
+            });
+          }
+        });
+      }
+    }
+  }, [messages, sessionStartTime]);
 
   // Auto-scroll to bottom when chat opens (history finishes loading) or when authenticated
   useEffect(() => {
-    if (!historyLoading && messages.length > 0) {
-      // Small delay to ensure DOM is ready
-      setTimeout(() => {
-        scrollToBottom();
-      }, 100);
+    if (!historyLoading && sessionStartTime) {
+      const sessionMessages = messages.filter(msg => {
+        const msgTime = msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp);
+        return msgTime >= sessionStartTime;
+      });
+      if (sessionMessages.length > 0) {
+        // Small delay to ensure DOM is ready
+        setTimeout(() => {
+          scrollToBottom();
+        }, 100);
+      }
     }
-  }, [historyLoading, isAuthenticated, messages.length, scrollToBottom]);
+  }, [historyLoading, isAuthenticated, messages.length, sessionStartTime, scrollToBottom]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -296,15 +343,22 @@ const ChatTerminal = () => {
     }
     if (!inputValue.trim() || isLoading) return;
 
+    // Set session start time on first message
+    if (!sessionStartTime) {
+      setSessionStartTime(new Date());
+    }
+
     const taskText = inputValue.trim();
     const taskTimestamp = new Date();
 
     // Add user message to chat like a group chat
+    // Note: taskId will be assigned when we get the response from the server
     const userMessage = {
       id: `user-${Date.now()}`,
       sender: 'user',
       text: taskText,
       timestamp: new Date(),
+      taskId: null, // Will be set from API response
     };
 
     upsertMessages([userMessage]);
@@ -344,16 +398,39 @@ const ChatTerminal = () => {
 
       const data = await response.json();
 
+      // Track first task ID on first message
+      if (!firstTaskId && data.task_id) {
+        setFirstTaskId(data.task_id);
+      }
+
       setMessages((prev) => {
         // Remove thinking message
         const filtered = prev.filter((msg) => !msg.isThinking);
-        // Update the optimistic message with the real ID from server if found
-        return filtered.map(msg => {
+        // Update the optimistic message with the real ID and task ID from server
+        const updated = filtered.map(msg => {
           if (msg.id === userMessage.id) {
-            return { ...msg, id: data.message_id || msg.id };
+            // Always assign the task ID from the API response to the user message
+            return { 
+              ...msg, 
+              id: data.message_id || msg.id, 
+              taskId: data.task_id || null
+            };
           }
           return msg;
         });
+        
+        // If no task_id in response yet, find the minimum task ID from all messages
+        if (!firstTaskId) {
+          const taskIds = updated
+            .map(msg => parseInt(msg.taskId) || null)
+            .filter(id => id !== null && id > 0);
+          if (taskIds.length > 0) {
+            const minTaskId = Math.min(...taskIds);
+            setFirstTaskId(minTaskId);
+          }
+        }
+        
+        return updated;
       });
 
       if (!response.ok) {
@@ -478,18 +555,134 @@ const ChatTerminal = () => {
       position: 'relative',
       overflow: 'hidden'
     }}>
-      {/* Header with Toggle */}
+      {/* Header with Agent Dropdowns */}
       <div style={{
         padding: '16px 24px',
         borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
+        gap: '16px',
         backgroundColor: 'rgba(20, 20, 20, 0.8)',
         backdropFilter: 'blur(10px)',
         zIndex: 10
       }}>
-        <h2 style={{ margin: 0, fontSize: '1.1rem', color: '#e5e5e5', fontWeight: 600 }}>AI Village Chat</h2>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{ 
+              width: '20px', 
+              height: '20px', 
+              backgroundColor: '#7c3aed', 
+              borderRadius: '4px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: '#fff',
+              fontSize: '0.7rem',
+              fontWeight: 600
+            }}>AI</div>
+            <div style={{ position: 'relative' }}>
+              <button
+                type="button"
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: '#e5e5e5',
+                  fontSize: '0.9rem',
+                  fontWeight: 500,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  padding: '4px 8px',
+                  borderRadius: '4px',
+                  transition: 'background-color 0.2s'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.1)'}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+              >
+                GPT 4
+                <span style={{ fontSize: '0.7rem', color: '#a3a3a3' }}>▼</span>
+              </button>
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{ 
+              width: '20px', 
+              height: '20px', 
+              backgroundColor: '#7c3aed', 
+              borderRadius: '4px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: '#fff',
+              fontSize: '0.7rem',
+              fontWeight: 600
+            }}>AI</div>
+            <div style={{ position: 'relative' }}>
+              <button
+                type="button"
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: '#e5e5e5',
+                  fontSize: '0.9rem',
+                  fontWeight: 500,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  padding: '4px 8px',
+                  borderRadius: '4px',
+                  transition: 'background-color 0.2s'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.1)'}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+              >
+                GPT 5
+                <span style={{ fontSize: '0.7rem', color: '#a3a3a3' }}>▼</span>
+              </button>
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{ 
+              width: '20px', 
+              height: '20px', 
+              backgroundColor: '#7c3aed', 
+              borderRadius: '4px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: '#fff',
+              fontSize: '0.7rem',
+              fontWeight: 600
+            }}>AI</div>
+            <div style={{ position: 'relative' }}>
+              <button
+                type="button"
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  color: '#e5e5e5',
+                  fontSize: '0.9rem',
+                  fontWeight: 500,
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  padding: '4px 8px',
+                  borderRadius: '4px',
+                  transition: 'background-color 0.2s'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.1)'}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+              >
+                GPT 4.1
+                <span style={{ fontSize: '0.7rem', color: '#a3a3a3' }}>▼</span>
+              </button>
+            </div>
+          </div>
+        </div>
         <span 
           key={isCollaborateMode ? 'collaborate' : 'solo'}
           className="mode-text-transition"
@@ -497,8 +690,8 @@ const ChatTerminal = () => {
             fontSize: '0.9rem', 
             color: isCollaborateMode ? '#a78bfa' : '#a3a3a3', 
             transition: 'color 0.4s ease-in-out',
-            marginRight: '100px',
-            display: 'inline-block'
+            display: 'inline-block',
+            marginRight: '30px'
           }}
         >
           {isCollaborateMode ? 'Collaborate Mode' : 'Solo Mode'}
@@ -530,11 +723,23 @@ const ChatTerminal = () => {
             </div>
           )}
 
-          {!historyLoading && messages.length === 0 && !historyError && (
-            <div style={{ color: '#a3a3a3', fontSize: '0.95rem', textAlign: 'center', marginTop: '40px' }}>
-              <div style={{ fontSize: '2rem', marginBottom: '16px' }}>👋</div>
-              <div style={{ fontWeight: 600, color: '#e5e5e5', marginBottom: '8px' }}>Welcome to AI Village</div>
-              <div>Enter a task below to start the swarm.</div>
+          {/* Always show "What would you like to do?" but fade when user types */}
+          {!historyLoading && !historyError && (
+            <div style={{ 
+              color: '#a3a3a3', 
+              fontSize: '2rem', 
+              textAlign: 'center', 
+              position: 'absolute',
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              fontWeight: 400,
+              opacity: (inputValue.trim() || sessionStartTime) ? 0 : 1,
+              transition: 'opacity 0.3s ease-in-out',
+              pointerEvents: 'none',
+              zIndex: 0
+            }}>
+              What would you like to do?
             </div>
           )}
 
@@ -551,7 +756,33 @@ const ChatTerminal = () => {
             </div>
           )}
 
-          {messages.map((message) => {
+          {(() => {
+            // Filter messages to only show those from current session
+            let sessionMessages = sessionStartTime 
+              ? messages.filter(msg => {
+                  const msgTime = msg.timestamp instanceof Date ? msg.timestamp : new Date(msg.timestamp);
+                  return msgTime >= sessionStartTime;
+                })
+              : [];
+
+            // Filter by task ID if first task ID is set
+            if (firstTaskId) {
+              sessionMessages = sessionMessages.filter(msg => {
+                // Include user messages (they should always be shown in chronological order)
+                if (msg.sender === 'user') return true;
+                // Include system messages without task IDs
+                if (!msg.taskId) return true;
+                // Include messages with task IDs >= first task ID
+                const msgTaskId = parseInt(msg.taskId) || 0;
+                return msgTaskId >= firstTaskId;
+              });
+            }
+
+            if (sessionMessages.length === 0) {
+              return null;
+            }
+
+            return sessionMessages.map((message) => {
             // Updated color mapping for dark purple theme
             // Using darker backgrounds with purple accents
             const agentColors = {
@@ -676,7 +907,8 @@ const ChatTerminal = () => {
                 </div>
               </div>
             );
-          })}
+            });
+          })()}
           <div ref={messagesEndRef} />
         </div>
         
@@ -695,137 +927,214 @@ const ChatTerminal = () => {
         )}
       </div>
 
-      <div ref={composerRef} style={{
-        padding: '24px',
-        width: '100%',
-        display: 'flex',
-        justifyContent: 'center',
-        background: 'linear-gradient(to top, #0a0a0a 80%, transparent)',
-        paddingBottom: '40px',
-        zIndex: 1,
-        position: 'relative'
-      }}>
+      <div 
+        ref={composerRef} 
+        style={{
+          padding: '24px',
+          width: '100%',
+          display: 'flex',
+          justifyContent: 'center',
+          background: 'linear-gradient(to top, #0a0a0a 80%, transparent)',
+          paddingBottom: '40px',
+          zIndex: 1,
+          position: 'relative'
+        }}
+      >
+        {!sessionStartTime && (
+          <Aurora
+            colorStops={["#7c3aed", "#a78bfa", "#7c3aed"]}
+            blend={0.6}
+            amplitude={0.8}
+            speed={inputValue.trim() ? 0 : 0.5}
+            opacity={inputValue.trim() ? 0 : 0.3}
+          />
+        )}
         <div style={{
           maxWidth: '800px',
           width: '100%',
           display: 'flex',
           flexDirection: 'column',
-          gap: '12px'
+          gap: '12px',
+          position: 'relative',
+          zIndex: 1
         }}>
           <form onSubmit={handleSubmit} style={{
             width: '100%',
             position: 'relative',
             display: 'flex',
-            alignItems: 'center',
+            flexDirection: 'column',
             gap: '8px'
           }}>
-          <div style={{ position: 'relative' }}>
-            {isHoveringModeButton && (
-              <div style={{
-                position: 'absolute',
-                bottom: '100%',
-                left: '50%',
-                transform: 'translateX(-50%)',
-                marginBottom: '8px',
-                padding: '10px 14px',
-                backgroundColor: 'rgba(20, 20, 20, 1)',
-                color: '#e5e5e5',
-                fontSize: '0.85rem',
-                borderRadius: '8px',
-                border: '1px solid rgba(255, 255, 255, 0.1)',
-                boxShadow: '0 4px 12px rgba(0, 0, 0, 0.4)',
-                zIndex: 1000,
-                pointerEvents: 'none',
-                opacity: 0.8,
-                width: '240px',
-                textAlign: 'center',
-                lineHeight: '1.4'
-              }}>
-                {isCollaborateMode 
-                  ? 'Collaborate: Agents work together to complete a given task'
-                  : 'Solo: Agents compete to do the same task'
-                }
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{ position: 'relative' }}>
+                {isHoveringModeButton && (
+                  <div style={{
+                    position: 'absolute',
+                    bottom: '100%',
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    marginBottom: '8px',
+                    padding: '10px 14px',
+                    backgroundColor: 'rgba(20, 20, 20, 1)',
+                    color: '#e5e5e5',
+                    fontSize: '0.85rem',
+                    borderRadius: '8px',
+                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.4)',
+                    zIndex: 1000,
+                    pointerEvents: 'none',
+                    opacity: 0.8,
+                    width: '240px',
+                    textAlign: 'center',
+                    lineHeight: '1.4'
+                  }}>
+                    {isCollaborateMode 
+                      ? 'Collaborate: Agents work together to complete a given task'
+                      : 'Solo: Agents compete to do the same task'
+                    }
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setIsCollaborateMode(!isCollaborateMode)}
+                  onMouseEnter={() => setIsHoveringModeButton(true)}
+                  onMouseLeave={() => setIsHoveringModeButton(false)}
+                  style={{
+                    background: 'transparent',
+                    border: 'none',
+                    cursor: 'pointer',
+                    padding: '8px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    transition: 'all 0.3s',
+                    opacity: isCollaborateMode ? 1 : 0.4,
+                    filter: isCollaborateMode ? 'none' : 'grayscale(100%)'
+                  }}
+                >
+                  <img 
+                    src={collaborateIcon} 
+                    alt="Collaborate Mode" 
+                    style={{
+                      width: '50px',
+                      height: '50px',
+                      objectFit: 'overflow'
+                    }}
+                  />
+                </button>
               </div>
-            )}
-            <button
-              type="button"
-              onClick={() => setIsCollaborateMode(!isCollaborateMode)}
-              onMouseEnter={() => setIsHoveringModeButton(true)}
-              onMouseLeave={() => setIsHoveringModeButton(false)}
-              style={{
-                background: 'transparent',
-                border: 'none',
-                cursor: 'pointer',
-                padding: '8px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                transition: 'all 0.3s',
-                opacity: isCollaborateMode ? 1 : 0.4,
-                filter: isCollaborateMode ? 'none' : 'grayscale(100%)'
-              }}
-            >
-              <img 
-                src={collaborateIcon} 
-                alt="Collaborate Mode" 
+              <input
+                type="text"
+                ref={inputRef}
+                value={inputValue}
+                onChange={handleInputChange}
+                onSelect={handleInputSelect}
+                onKeyUp={handleInputSelect}
+                placeholder={isAuthenticated ? "Ask anything..." : "Authenticate to send messages"}
+                disabled={!isAuthenticated || isLoading}
                 style={{
-                  width: '50px',
-                  height: '50px',
-                  objectFit: 'overflow'
+                  flex: 1,
+                  padding: '16px 50px 16px 20px',
+                  backgroundColor: 'rgba(26, 26, 26, 0.8)',
+                  border: '1px solid rgba(255, 255, 255, 0.1)',
+                  borderRadius: '12px',
+                  color: '#e5e5e5',
+                  fontSize: '1rem',
+                  outline: 'none',
+                  boxShadow: '0 2px 8px rgba(0, 0, 0, 0.4)',
+                  backdropFilter: 'blur(12px)',
+                  marginLeft: '-0px'
                 }}
               />
-            </button>
-          </div>
-          <input
-            type="text"
-            ref={inputRef}
-            value={inputValue}
-            onChange={handleInputChange}
-            onSelect={handleInputSelect}
-            onKeyUp={handleInputSelect}
-            placeholder={isAuthenticated ? "Send a message to the agents..." : "Authenticate to send messages"}
-            disabled={!isAuthenticated || isLoading}
-            style={{
-              flex: 1,
-              padding: '16px 50px 16px 20px',
-              backgroundColor: 'rgba(26, 26, 26, 0.8)',
-              border: '1px solid rgba(255, 255, 255, 0.1)',
-              borderRadius: '16px',
-              color: '#e5e5e5',
-              fontSize: '1rem',
-              outline: 'none',
-              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.4)',
-              backdropFilter: 'blur(12px)'
-            }}
-          />
-          <button
-            type="submit"
-            disabled={!isAuthenticated || !inputValue.trim() || isLoading}
-            style={{
-              position: 'absolute',
-              right: '10px',
-              top: '50%',
-              transform: 'translateY(-50%)',
-              background: inputValue.trim() ? '#7c3aed' : 'transparent',
-              color: inputValue.trim() ? '#ffffff' : '#737373',
-              border: 'none',
-              borderRadius: '50%',
-              width: '38px',
-              height: '38px',
-              cursor: inputValue.trim() ? 'pointer' : 'default',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              transition: 'all 0.2s',
-              boxShadow: inputValue.trim() ? '0 0 15px rgba(124, 58, 237, 0.4)' : 'none'
-            }}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="22" y1="2" x2="11" y2="13"></line>
-              <path d="M22 2L15 22 11 13 2 9 22 2z"></path>
-            </svg>
-          </button>
-        </form>
+              <button
+                type="submit"
+                disabled={!isAuthenticated || !inputValue.trim() || isLoading}
+                style={{
+                  background: inputValue.trim() ? '#7c3aed' : 'transparent',
+                  color: inputValue.trim() ? '#ffffff' : '#737373',
+                  border: 'none',
+                  borderRadius: '8px',
+                  width: '40px',
+                  height: '40px',
+                  cursor: inputValue.trim() ? 'pointer' : 'default',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  transition: 'all 0.2s',
+                  boxShadow: inputValue.trim() ? '0 0 15px rgba(124, 58, 237, 0.4)' : 'none'
+                }}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 5v14M19 12l-7 7-7-7"></path>
+                </svg>
+              </button>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingLeft: '66px' }}>
+              <button
+                type="button"
+                style={{
+                  width: '32px',
+                  height: '32px',
+                  borderRadius: '6px',
+                  border: 'none',
+                  background: 'rgba(255, 255, 255, 0.05)',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '1.2rem',
+                  transition: 'background-color 0.2s'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.1)'}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)'}
+                title="Search"
+              >
+                🌐
+              </button>
+              <button
+                type="button"
+                style={{
+                  width: '32px',
+                  height: '32px',
+                  borderRadius: '6px',
+                  border: 'none',
+                  background: 'rgba(255, 255, 255, 0.05)',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '1.2rem',
+                  transition: 'background-color 0.2s'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.1)'}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)'}
+                title="Image"
+              >
+                🖼️
+              </button>
+              <button
+                type="button"
+                style={{
+                  width: '32px',
+                  height: '32px',
+                  borderRadius: '6px',
+                  border: 'none',
+                  background: 'rgba(255, 255, 255, 0.05)',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '1.2rem',
+                  transition: 'background-color 0.2s'
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.1)'}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)'}
+                title="Code"
+              >
+                &lt;&gt;
+              </button>
+            </div>
+          </form>
         </div>
         {isMentionMenuVisible && mentionOptions.length > 0 && (
           <div
