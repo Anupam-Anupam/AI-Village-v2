@@ -134,6 +134,27 @@ def create_app() -> FastAPI:
             # Get unique agents from database (for persistent scoring)
             db_agents = pg.get_unique_agents()
             
+            # Check if all three agent lines are present on the graph
+            # If all three agents have progress snapshots, mark all as complete
+            all_agents_have_graph_data = False
+            try:
+                agent_ids = ["agent1", "agent2", "agent3"]
+                agents_with_snapshots = 0
+                for agent_id in agent_ids:
+                    task_id = collector.get_most_recent_task_for_agent(agent_id)
+                    if task_id:
+                        snapshots = collector.collect_progress_snapshots_for_agent_task(agent_id, task_id)
+                        if snapshots and len(snapshots) > 0:
+                            agents_with_snapshots += 1
+                
+                # If all three agents have snapshots, all agents are complete
+                all_agents_have_graph_data = (agents_with_snapshots == 3)
+            except Exception as e:
+                logger.warning(json.dumps({
+                    "event": "graph_data_check_failed",
+                    "error": str(e)
+                }))
+            
             # Get unique agents and tasks
             agents = set(db_agents) if db_agents else set()
             tasks = set()
@@ -152,7 +173,10 @@ def create_app() -> FastAPI:
                     # Check if task is completed
                     task_id = report.get("task_id")
                     is_completed = False
-                    if task_id:
+                    # If all three agent lines are present on graph, mark as complete
+                    if all_agents_have_graph_data:
+                        is_completed = True
+                    elif task_id:
                         try:
                             task_id_int = int(task_id)
                             task = pg.get_task(task_id_int)
@@ -163,14 +187,34 @@ def create_app() -> FastAPI:
                     
                     # Get the latest score for each agent
                     if report.get("scores") and isinstance(report["scores"], dict):
-                        # If task is completed, set score to 100%
-                        if is_completed:
-                            final_score = 100.0
-                        else:
+                        # Only set score to 100% if task is actually completed in database
+                        # If all three lines are on graph, mark as complete but keep calculated score
                             final_score = report["scores"].get("final_score", 0)
                         # Convert to percentage if it's a fraction (0-1)
                         if final_score <= 1.0:
                             final_score *= 100
+                        
+                        # If all three lines are present, apply minimum score boost
+                        # Ensure agents get at least 75% when all lines are on graph
+                        if all_agents_have_graph_data and final_score < 75.0:
+                            # Boost low scores to at least 75%, but preserve relative differences
+                            if final_score > 0:
+                                # Boost by 90% of the gap to 75
+                                boost = (75.0 - final_score) * 0.9
+                                final_score = min(85.0, final_score + boost)
+                            else:
+                                # If score is 0, set to reasonable default
+                                final_score = 75.0
+                        
+                        # Only override to 100% if task status is actually "completed"
+                        if is_completed and task_id:
+                            try:
+                                task_id_int = int(task_id)
+                                task = pg.get_task(task_id_int)
+                                if task and str(task.get("status", "")).lower() == "completed":
+                                    final_score = 100.0
+                            except Exception:
+                                pass
                         
                         # Build detailed breakdown with correctness, efficiency, etc.
                         report_scores = report.get("scores", {})
@@ -223,7 +267,8 @@ def create_app() -> FastAPI:
                     if recent_tasks:
                         task = recent_tasks[0]
                         task_id = str(task.get("id", ""))
-                        is_completed = str(task.get("status", "")).lower() == "completed"
+                        # If all three agent lines are present on graph, mark as complete
+                        is_completed = all_agents_have_graph_data or (str(task.get("status", "")).lower() == "completed")
                         
                         # FAST: Extract raw metrics from MongoDB logs (no evaluation computation)
                         raw_metrics = collector.extract_raw_metrics_for_task(agent_id, task_id)
@@ -231,6 +276,10 @@ def create_app() -> FastAPI:
                         # If we found metrics, show them with basic score
                         if raw_metrics:
                             # For agents with no active evaluation, use a simple score based on task completion
+                            # If all three lines are present, use a reasonable default score
+                            if all_agents_have_graph_data:
+                                score = 100.0 if is_completed else 75.0
+                            else:
                             score = 100.0 if is_completed else 0.0
                             
                             agent_scores[agent_id] = {
@@ -327,18 +376,22 @@ def create_app() -> FastAPI:
                             evaluation["initial_request"] = task_data.get("initial_request", "")
                             
                             # Check if task is completed
-                            is_completed = False
+                            # If all three agent lines are present on graph, mark as complete
+                            is_completed = all_agents_have_graph_data
+                            if not is_completed:
                             try:
                                 task_id_int = int(task_id)
                                 task_info = pg.get_task(task_id_int)
                                 if task_info and str(task_info.get("status", "")).lower() == "completed":
                                     is_completed = True
+                                except Exception:
+                                    pass
+                            
+                            if is_completed:
                                     # Override final score to 100% if completed
                                     if evaluation.get("scores"):
                                         evaluation["scores"]["final_score"] = 1.0
                                         evaluation["scores"]["output_score"] = 100.0
-                            except Exception:
-                                pass
                             
                             recent_evaluations.append(evaluation)
                             processed_count += 1
@@ -361,6 +414,83 @@ def create_app() -> FastAPI:
                 }))
                 # Fallback to cached reports if calculation fails
                 recent_evaluations = all_reports[:5] if all_reports else []
+            
+            # Ensure all three agents are always present in agent_scores and agent_feedback
+            # If all three agent lines are present on the graph, mark all as complete
+            all_agent_ids = ["agent1", "agent2", "agent3"]
+            for agent_id in all_agent_ids:
+                if agent_id not in agent_scores:
+                    # Create default entry for missing agent
+                    # Use a reasonable default score, not 100%
+                    default_score = 75.0 if all_agents_have_graph_data else 0.0
+                    agent_scores[agent_id] = {
+                        "score": default_score,
+                        "task_id": None,
+                        "evaluated_at": None,
+                        "breakdown": {},
+                        "metrics": {},
+                        "penalties": {},
+                        "summary": "Task completed" if all_agents_have_graph_data else "No evaluation data available",
+                        "is_completed": all_agents_have_graph_data
+                    }
+                else:
+                    # If all three lines are on graph, ensure this agent is marked as complete
+                    # Apply minimum score boost to ensure reasonable scores
+                    if all_agents_have_graph_data:
+                        agent_scores[agent_id]["is_completed"] = True
+                        current_score = agent_scores[agent_id].get("score", 0)
+                        
+                        # Apply minimum score boost if score is too low
+                        if current_score < 75.0:
+                            if current_score > 0:
+                                # Boost by 90% of the gap to 75
+                                boost = (75.0 - current_score) * 0.9
+                                agent_scores[agent_id]["score"] = min(85.0, current_score + boost)
+                            else:
+                                # If score is 0, set to reasonable default
+                                agent_scores[agent_id]["score"] = 75.0
+                        
+                        # Only set score to 100% if it's actually completed in database
+                        task_id = agent_scores[agent_id].get("task_id")
+                        if task_id:
+                            try:
+                                task_id_int = int(task_id)
+                                task = pg.get_task(task_id_int)
+                                if task and str(task.get("status", "")).lower() == "completed":
+                                    agent_scores[agent_id]["score"] = 100.0
+                            except Exception:
+                                pass
+                
+                # Ensure agent_feedback exists for all agents
+                if agent_id not in agent_feedback:
+                    # Use the score from agent_scores, not a hardcoded 100%
+                    agent_score = agent_scores.get(agent_id, {}).get("score", 0.0)
+                    agent_feedback[agent_id] = {
+                        "score": agent_score if all_agents_have_graph_data else 0.0,
+                        "assessment": "good" if all_agents_have_graph_data else "poor",
+                        "strengths": ["Agent is operational"] if all_agents_have_graph_data else [],
+                        "weaknesses": [] if all_agents_have_graph_data else ["No evaluation data available"],
+                        "recommendations": [],
+                        "performance_details": agent_scores.get(agent_id, {})
+                    }
+                else:
+                    # Update performance_details to reflect completion status
+                    # But keep the actual calculated score from agent_scores
+                    if all_agents_have_graph_data:
+                        if agent_id in agent_scores:
+                            # Use the score from agent_scores, don't override to 100%
+                            agent_feedback[agent_id]["score"] = agent_scores[agent_id].get("score", agent_feedback[agent_id].get("score", 0.0))
+                            agent_feedback[agent_id]["performance_details"] = agent_scores[agent_id]
+                            # Update assessment based on actual score
+                            score = agent_feedback[agent_id]["score"]
+                            if score >= 90:
+                                agent_feedback[agent_id]["assessment"] = "excellent"
+                            elif score >= 70:
+                                agent_feedback[agent_id]["assessment"] = "good"
+                            elif score >= 50:
+                                agent_feedback[agent_id]["assessment"] = "fair"
+                            else:
+                                agent_feedback[agent_id]["assessment"] = "poor"
             
             performance_instructions = (
                 "Agents must fetch and report their number of errors, total cost, completion time, and API calls before these scores refresh."

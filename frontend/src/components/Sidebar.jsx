@@ -55,6 +55,14 @@ const Sidebar = ({ activeTab, setActiveTab }) => {
             <img src={liveIcon} alt="Live Agents" style={{ width: '3.0rem', height: '3.0rem', objectFit: 'overflow' }} />
           </span>
           <span className="sidebar-tab__label">Live Agents</span>
+          <span 
+            className="sidebar-tab__add-icon" 
+            title="Upload your own model for benchmarking"
+            onClick={(e) => e.stopPropagation()}
+          >
+            +
+            <span className="sidebar-tab__tooltip">Upload your own model for benchmarking</span>
+          </span>
         </button>
         <button
           className={`sidebar-tab ${activeTab === 'evaluator' ? 'sidebar-tab--active' : ''}`}

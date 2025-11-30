@@ -551,18 +551,18 @@ const EvaluatorView = () => {
                 </div>
                 <div className="card-body">
                     {['agent1', 'agent2', 'agent3'].map(agentId => {
-                        const feedbackEntry = agentFeedback[agentId];
+                            const feedbackEntry = agentFeedback[agentId];
                         const scoreData = agentScores[agentId];
-                        // First check performance_details if available from feedback, then fall back to scoreData
-                        const data = feedbackEntry?.performance_details || scoreData;
-                        
-                        // Handle missing metrics/breakdown with guards
-                        const breakdown = data?.breakdown || (data?.scores && Object.keys(data.scores).length > 0 ? data.scores : {});
-                        const metrics = data?.metrics || {};
-                        const penalties = data?.penalties || {};
-                        const summary = data?.summary || '';
-                        
-                        const isCompleted = data?.is_completed || false;
+                            // First check performance_details if available from feedback, then fall back to scoreData
+                            const data = feedbackEntry?.performance_details || scoreData;
+                            
+                            // Handle missing metrics/breakdown with guards
+                            const breakdown = data?.breakdown || (data?.scores && Object.keys(data.scores).length > 0 ? data.scores : {});
+                            const metrics = data?.metrics || {};
+                            const penalties = data?.penalties || {};
+                            const summary = data?.summary || '';
+                            
+                            const isCompleted = data?.is_completed || false;
                         const color = isCompleted ? '#22c55e' : '#f59e0b';
                         const isExpanded = expandedAgents[agentId];
                         
@@ -597,15 +597,15 @@ const EvaluatorView = () => {
                                 
                                 <div className={`agent-details-dropdown ${isExpanded ? 'expanded' : ''}`}>
                                     <div className="agent-details-content">
-                                         <ScoreBreakdown 
+                                             <ScoreBreakdown 
                                             scores={breakdown}
                                             metrics={metrics}
                                             penalties={penalties}
                                             summary={summary}
-                                            isCompact={true}
-                                            isCompleted={isCompleted}
+                                                isCompact={true}
+                                                isCompleted={isCompleted}
                                             agentId={agentId}
-                                         />
+                                             />
                                     </div>
                                 </div>
                             </div>

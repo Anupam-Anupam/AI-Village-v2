@@ -2,15 +2,24 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { API_BASE, REFRESH_INTERVALS } from '../config';
 import { ensureDate, normalizePercent, formatPercentLabel, buildAgentMessage, formatTime } from '../utils/chatUtils';
 import collaborateIcon from '../images/928470d7-332a-416c-82cf-871acd43342a.png';
-import webIcon from '../images/web.png';
 import imageIcon from '../images/image.png';
-import codeIcon from '../images/code.png';
 import chatgptIcon from '../images/gpt.png';
 import claudeIcon from '../images/claude-ai.png';
 import Aurora from './Aurora';
 import TextType from './TextType';
 
 const AVAILABLE_AGENTS = ['agent1', 'agent2', 'agent3'];
+
+const AVAILABLE_MODELS = [
+  'GPT-5',
+  'GPT-4o',
+  'GPT-4 Turbo',
+  'Claude Sonnet 4.5',
+  'Claude Opus 3',
+  'Gemini Pro 1.5',
+  'Llama 3.1 405B',
+  'Mixtral 8x22B'
+];
 
 const detectTaggedAgents = (text = '') => {
   if (!text) return [];
@@ -50,6 +59,17 @@ const ChatTerminal = () => {
   const [isHoveringModeButton, setIsHoveringModeButton] = useState(false);
   const [sessionStartTime, setSessionStartTime] = useState(null);
   const [firstTaskId, setFirstTaskId] = useState(null);
+  const [selectedModels, setSelectedModels] = useState({
+    agent1: 'GPT-5',
+    agent2: 'Sonnet 4.5',
+    agent3: 'GPT-4o'
+  });
+  const [openDropdown, setOpenDropdown] = useState(null); // 'agent1', 'agent2', 'agent3', or null
+  const agentDropdownRefs = {
+    agent1: useRef(null),
+    agent2: useRef(null),
+    agent3: useRef(null)
+  };
 
   const upsertMessages = useCallback((incoming = [], { restampNew = false } = {}) => {
     if (!incoming.length) {
@@ -107,6 +127,27 @@ const ChatTerminal = () => {
     const intervalId = setInterval(fetchAgentsStatus, REFRESH_INTERVALS.liveFeed);
     return () => clearInterval(intervalId);
   }, [fetchAgentsStatus]);
+
+  // Close agent dropdowns when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      const clickedOutside = Object.values(agentDropdownRefs).every(ref => 
+        ref.current && !ref.current.contains(event.target)
+      );
+      
+      if (clickedOutside && openDropdown) {
+        setOpenDropdown(null);
+      }
+    };
+
+    if (openDropdown) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [openDropdown]);
 
   const updateMentionState = useCallback((value, cursorPos) => {
     if (cursorPos == null) {
@@ -595,9 +636,10 @@ const ChatTerminal = () => {
                 }}
               />
             </div>
-            <div style={{ position: 'relative' }}>
+            <div ref={agentDropdownRefs.agent1} style={{ position: 'relative' }}>
               <button
                 type="button"
+                onClick={() => setOpenDropdown(openDropdown === 'agent1' ? null : 'agent1')}
                 style={{
                   background: 'transparent',
                   border: 'none',
@@ -615,9 +657,63 @@ const ChatTerminal = () => {
                 onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.1)'}
                 onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
               >
-                GPT-5
-                <span style={{ fontSize: '0.7rem', color: '#a3a3a3' }}>▼</span>
+                {selectedModels.agent1}
+                <span style={{ fontSize: '0.7rem', color: '#a3a3a3' }}>
+                  {openDropdown === 'agent1' ? '▲' : '▼'}
+                </span>
               </button>
+              {openDropdown === 'agent1' && (
+                <div style={{
+                  position: 'absolute',
+                  top: 'calc(100% + 8px)',
+                  left: 0,
+                  minWidth: '200px',
+                  background: 'rgba(15, 15, 20, 0.98)',
+                  border: '1px solid rgba(255, 255, 255, 0.1)',
+                  borderRadius: '8px',
+                  boxShadow: '0 8px 24px rgba(0, 0, 0, 0.5)',
+                  zIndex: 1000,
+                  overflow: 'hidden',
+                  backdropFilter: 'blur(10px)'
+                }}>
+                  {AVAILABLE_MODELS.map((model) => (
+                    <button
+                      key={model}
+                      type="button"
+                      onClick={() => {
+                        setSelectedModels(prev => ({ ...prev, agent1: model }));
+                        setOpenDropdown(null);
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '10px 16px',
+                        background: selectedModels.agent1 === model 
+                          ? 'rgba(124, 58, 237, 0.2)' 
+                          : 'transparent',
+                        border: 'none',
+                        color: selectedModels.agent1 === model ? '#a78bfa' : '#e5e5e5',
+                        fontSize: '0.85rem',
+                        textAlign: 'left',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s',
+                        borderBottom: '1px solid rgba(255, 255, 255, 0.05)'
+                      }}
+                      onMouseEnter={(e) => {
+                        if (selectedModels.agent1 !== model) {
+                          e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (selectedModels.agent1 !== model) {
+                          e.currentTarget.style.background = 'transparent';
+                        }
+                      }}
+                    >
+                      {model}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -641,9 +737,10 @@ const ChatTerminal = () => {
                 }}
               />
             </div>
-            <div style={{ position: 'relative' }}>
+            <div ref={agentDropdownRefs.agent2} style={{ position: 'relative' }}>
               <button
                 type="button"
+                onClick={() => setOpenDropdown(openDropdown === 'agent2' ? null : 'agent2')}
                 style={{
                   background: 'transparent',
                   border: 'none',
@@ -661,9 +758,63 @@ const ChatTerminal = () => {
                 onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.1)'}
                 onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
               >
-                Sonnet 4.5
-                <span style={{ fontSize: '0.7rem', color: '#a3a3a3' }}>▼</span>
+                {selectedModels.agent2}
+                <span style={{ fontSize: '0.7rem', color: '#a3a3a3' }}>
+                  {openDropdown === 'agent2' ? '▲' : '▼'}
+                </span>
               </button>
+              {openDropdown === 'agent2' && (
+                <div style={{
+                  position: 'absolute',
+                  top: 'calc(100% + 8px)',
+                  left: 0,
+                  minWidth: '200px',
+                  background: 'rgba(15, 15, 20, 0.98)',
+                  border: '1px solid rgba(255, 255, 255, 0.1)',
+                  borderRadius: '8px',
+                  boxShadow: '0 8px 24px rgba(0, 0, 0, 0.5)',
+                  zIndex: 1000,
+                  overflow: 'hidden',
+                  backdropFilter: 'blur(10px)'
+                }}>
+                  {AVAILABLE_MODELS.map((model) => (
+                    <button
+                      key={model}
+                      type="button"
+                      onClick={() => {
+                        setSelectedModels(prev => ({ ...prev, agent2: model }));
+                        setOpenDropdown(null);
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '10px 16px',
+                        background: selectedModels.agent2 === model 
+                          ? 'rgba(124, 58, 237, 0.2)' 
+                          : 'transparent',
+                        border: 'none',
+                        color: selectedModels.agent2 === model ? '#a78bfa' : '#e5e5e5',
+                        fontSize: '0.85rem',
+                        textAlign: 'left',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s',
+                        borderBottom: '1px solid rgba(255, 255, 255, 0.05)'
+                      }}
+                      onMouseEnter={(e) => {
+                        if (selectedModels.agent2 !== model) {
+                          e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (selectedModels.agent2 !== model) {
+                          e.currentTarget.style.background = 'transparent';
+                        }
+                      }}
+                    >
+                      {model}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -687,9 +838,10 @@ const ChatTerminal = () => {
                 }}
               />
             </div>
-            <div style={{ position: 'relative' }}>
+            <div ref={agentDropdownRefs.agent3} style={{ position: 'relative' }}>
               <button
                 type="button"
+                onClick={() => setOpenDropdown(openDropdown === 'agent3' ? null : 'agent3')}
                 style={{
                   background: 'transparent',
                   border: 'none',
@@ -707,25 +859,81 @@ const ChatTerminal = () => {
                 onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.1)'}
                 onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
               >
-                GPT-4o
-                <span style={{ fontSize: '0.7rem', color: '#a3a3a3' }}>▼</span>
+                {selectedModels.agent3}
+                <span style={{ fontSize: '0.7rem', color: '#a3a3a3' }}>
+                  {openDropdown === 'agent3' ? '▲' : '▼'}
+                </span>
               </button>
+              {openDropdown === 'agent3' && (
+                <div style={{
+                  position: 'absolute',
+                  top: 'calc(100% + 8px)',
+                  left: 0,
+                  minWidth: '200px',
+                  background: 'rgba(15, 15, 20, 0.98)',
+                  border: '1px solid rgba(255, 255, 255, 0.1)',
+                  borderRadius: '8px',
+                  boxShadow: '0 8px 24px rgba(0, 0, 0, 0.5)',
+                  zIndex: 1000,
+                  overflow: 'hidden',
+                  backdropFilter: 'blur(10px)'
+                }}>
+                  {AVAILABLE_MODELS.map((model) => (
+                    <button
+                      key={model}
+                      type="button"
+                      onClick={() => {
+                        setSelectedModels(prev => ({ ...prev, agent3: model }));
+                        setOpenDropdown(null);
+                      }}
+                      style={{
+                        width: '100%',
+                        padding: '10px 16px',
+                        background: selectedModels.agent3 === model 
+                          ? 'rgba(124, 58, 237, 0.2)' 
+                          : 'transparent',
+                        border: 'none',
+                        color: selectedModels.agent3 === model ? '#a78bfa' : '#e5e5e5',
+                        fontSize: '0.85rem',
+                        textAlign: 'left',
+                        cursor: 'pointer',
+                        transition: 'all 0.2s',
+                        borderBottom: '1px solid rgba(255, 255, 255, 0.05)'
+                      }}
+                      onMouseEnter={(e) => {
+                        if (selectedModels.agent3 !== model) {
+                          e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (selectedModels.agent3 !== model) {
+                          e.currentTarget.style.background = 'transparent';
+                        }
+                      }}
+                    >
+                      {model}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>
-        <span 
-          key={isCollaborateMode ? 'collaborate' : 'solo'}
-          className="mode-text-transition"
-          style={{ 
-            fontSize: '0.9rem', 
-            color: isCollaborateMode ? '#a78bfa' : '#a3a3a3', 
-            transition: 'color 0.4s ease-in-out',
-            display: 'inline-block',
-            marginRight: '30px'
-          }}
-        >
-          {isCollaborateMode ? 'Collaborate Mode' : 'Solo Mode'}
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+          <span 
+            key={isCollaborateMode ? 'collaborate' : 'solo'}
+            className="mode-text-transition"
+            style={{ 
+              fontSize: '0.9rem', 
+              color: isCollaborateMode ? '#a78bfa' : '#a3a3a3', 
+              transition: 'color 0.4s ease-in-out',
+              display: 'inline-block',
+              marginRight: '30px'
+            }}
+          >
+            {isCollaborateMode ? 'Collaborate Mode' : 'Solo Mode'}
+          </span>
+        </div>
       </div>
 
       {/* Chat content with higher z-index */}
@@ -1139,69 +1347,11 @@ const ChatTerminal = () => {
                 }}
                 onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.1)'}
                 onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)'}
-                title="Search"
-              >
-                <img 
-                  src={webIcon} 
-                  alt="Web" 
-                  style={{
-                    width: '18px',
-                    height: '18px',
-                    objectFit: 'contain'
-                  }}
-                />
-              </button>
-              <button
-                type="button"
-                style={{
-                  width: '32px',
-                  height: '32px',
-                  borderRadius: '6px',
-                  border: 'none',
-                  background: 'rgba(255, 255, 255, 0.05)',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '1.2rem',
-                  transition: 'background-color 0.2s'
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.1)'}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)'}
                 title="Image"
               >
                 <img 
                   src={imageIcon} 
                   alt="Image" 
-                  style={{
-                    width: '18px',
-                    height: '18px',
-                    objectFit: 'contain'
-                  }}
-                />
-              </button>
-              <button
-                type="button"
-                style={{
-                  width: '32px',
-                  height: '32px',
-                  borderRadius: '6px',
-                  border: 'none',
-                  background: 'rgba(255, 255, 255, 0.05)',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '1.2rem',
-                  transition: 'background-color 0.2s'
-                }}
-                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.1)'}
-                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)'}
-                title="Code"
-              >
-                <img 
-                  src={codeIcon} 
-                  alt="Code" 
                   style={{
                     width: '18px',
                     height: '18px',
